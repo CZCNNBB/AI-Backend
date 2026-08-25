@@ -32,10 +32,11 @@ class AgentTemplateRepository:
             template: 待保存的模板模型。
 
         Returns:
-            已持久化的模板模型。
+            已刷新到当前事务的模板模型。
         """
         db.add(template)
-        db.commit()
+        # Repository 不提交事务，确保模板相关的组合操作可以由 Service 整体回滚。
+        db.flush()
         db.refresh(template)
         return template
 
@@ -151,5 +152,5 @@ class AgentTemplateRepository:
         ).all()
         for template in existing:
             db.delete(template)
-        db.commit()
+        db.flush()
         return len(existing)

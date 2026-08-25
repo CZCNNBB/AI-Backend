@@ -4,6 +4,7 @@ from typing import Any
 from sqlmodel import Session
 
 from app.common.core.exceptions import BusinessException
+from app.common.db.postgres_db import postgres_transaction
 from app.server.agent.src.mcp.client import MCPConnectionConfig, create_multi_server_client
 from app.server.agent.src.mcp.models import AgentMCPToolRecord
 from app.server.agent.src.mcp.repository import MCPRepository
@@ -153,6 +154,45 @@ class MCPService:
 
     async def load_langchain_tools(self, db: Session, mcp_codes: list[str]) -> list[Any]:
         """根据平台 MCP 工具编码加载 LangChain 可用工具。"""
+        records = self._get_enabled_tool_records(db, mcp_codes)
+        return await self._load_langchain_tools_from_records(records, mcp_codes)
+
+    async def load_runtime_langchain_tools(self, mcp_codes: list[str]) -> list[Any]:
+        """使用数据库配置快照加载 Agent 运行时 MCP 工具。
+
+        Args:
+            mcp_codes: Agent 模板声明的 MCP 工具编码列表。
+
+        Returns:
+            可传给 LangChain Agent 的 MCP 工具对象列表。
+
+        说明：
+            数据库查询阶段只生成 Pydantic 视图快照。短事务关闭后才访问远程 MCP，
+            因此 MCP 服务响应缓慢时不会占用 AI-backend 的业务数据库连接。
+        """
+        with postgres_transaction() as config_db:
+            records = self._get_enabled_tool_records(config_db, mcp_codes)
+            record_snapshots = [self.to_tool_view(record) for record in records]
+
+        return await self._load_langchain_tools_from_records(record_snapshots, mcp_codes)
+
+    def _get_enabled_tool_records(
+        self,
+        db: Session,
+        mcp_codes: list[str],
+    ) -> list[AgentMCPToolRecord]:
+        """查询并校验已启用的 MCP 工具数据库记录。
+
+        Args:
+            db: 当前短事务 Session。
+            mcp_codes: 需要加载的 MCP 工具编码列表。
+
+        Returns:
+            与输入编码顺序对应的 MCP 工具记录列表。
+
+        Raises:
+            RuntimeError: 工具不存在或未启用时抛出。
+        """
         if not mcp_codes:
             return []
 
@@ -161,6 +201,26 @@ class MCPService:
         missing_codes = [code for code in mcp_codes if code not in record_by_code]
         if missing_codes:
             raise RuntimeError(f"MCP 工具不存在或未启用: {', '.join(missing_codes)}")
+
+        # 仓储查询的返回顺序不稳定，这里恢复模板声明顺序，保证后续数量和名称校验可预测。
+        return [record_by_code[code] for code in mcp_codes]
+
+    async def _load_langchain_tools_from_records(
+        self,
+        records: list[AgentMCPToolRecord | AgentMCPToolView],
+        mcp_codes: list[str],
+    ) -> list[Any]:
+        """根据已脱离 Session 的配置记录访问远程 MCP 并筛选工具。
+
+        Args:
+            records: ORM 记录或已经复制完成的 Pydantic 配置快照。
+            mcp_codes: 需要加载的 MCP 工具编码列表。
+
+        Returns:
+            与请求编码对应的 LangChain MCP 工具对象列表。
+        """
+        if not mcp_codes:
+            return []
 
         connections = self._group_connections(records)
         requested_names_by_connection = self._build_requested_names_by_connection(records, connections)
@@ -185,7 +245,10 @@ class MCPService:
         client = create_multi_server_client(connections)
         return await client.get_tools()
 
-    def _group_connections(self, records: list[AgentMCPToolRecord]) -> list[MCPConnectionConfig]:
+    def _group_connections(
+        self,
+        records: list[AgentMCPToolRecord | AgentMCPToolView],
+    ) -> list[MCPConnectionConfig]:
         """按 base_url、transport 和认证配置对 MCP 工具记录做运行时连接分组。"""
         grouped: dict[tuple[str, str, str], MCPConnectionConfig] = {}
         for record in records:
@@ -203,7 +266,7 @@ class MCPService:
 
     def _build_requested_names_by_connection(
         self,
-        records: list[AgentMCPToolRecord],
+        records: list[AgentMCPToolRecord | AgentMCPToolView],
         connections: list[MCPConnectionConfig],
     ) -> dict[str, set[str]]:
         """建立连接 key 到目标 MCP 工具名集合的映射。"""
@@ -217,7 +280,7 @@ class MCPService:
 
     def _find_connection_for_record(
         self,
-        record: AgentMCPToolRecord,
+        record: AgentMCPToolRecord | AgentMCPToolView,
         connections: list[MCPConnectionConfig],
     ) -> MCPConnectionConfig | None:
         """查找某条 MCP 工具记录对应的运行时连接配置。"""

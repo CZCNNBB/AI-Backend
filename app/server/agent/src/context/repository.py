@@ -35,7 +35,8 @@ class AgentContextRepository:
             已持久化的会话模型。
         """
         db.add(conversation)
-        db.commit()
+        # Repository 只把 SQL 刷新到当前事务，提交由上层业务边界统一控制。
+        db.flush()
         db.refresh(conversation)
         return conversation
 
@@ -52,7 +53,7 @@ class AgentContextRepository:
         """
         conversation.updated_at = datetime.now()
         db.add(conversation)
-        db.commit()
+        db.flush()
         db.refresh(conversation)
         return conversation
 
@@ -68,7 +69,7 @@ class AgentContextRepository:
             已持久化的消息模型。
         """
         db.add(message)
-        db.commit()
+        db.flush()
         db.refresh(message)
         return message
 

@@ -172,12 +172,11 @@ class AgentToolService:
             items.append(self._build_a2a_tool_info())
         return items
 
-    async def get_tools(self, tool_names: list[str] | None = None, db: Session | None = None) -> list[Any]:
+    async def get_tools(self, tool_names: list[str] | None = None) -> list[Any]:
         """解析模板配置中的 MCP 外接工具。
 
         Args:
             tool_names: 模板 tools 白名单。该字段只允许填写 MCP 工具编码；None 或空列表表示不加载外接工具。
-            db: 数据库会话；加载 MCP 工具时必须传入或临时打开只读会话。
 
         Returns:
             可传给 LangChain create_agent 的 MCP 工具对象列表。
@@ -200,15 +199,9 @@ class AgentToolService:
 
         # 去重但保留用户配置顺序，便于日志排查。
         mcp_tool_codes = list(dict.fromkeys(cleaned_names))
-        if db is not None:
-            return await self.mcp_service.load_langchain_tools(db, mcp_tool_codes)
-
-        # A2A 子 Agent 等内部调用场景可能不传 db，此时短暂打开一个
-        # 只读会话，仅用于加载 MCP 工具配置，不写业务会话记录。
-        from app.common.db.postgres_db import get_db_session
-
-        with get_db_session() as inner_db:
-            return await self.mcp_service.load_langchain_tools(inner_db, mcp_tool_codes)
+        # MCP 配置查询和远程工具发现必须分成两个阶段：先在短事务中复制配置快照并关闭 Session，
+        # 再访问远程 MCP 服务，避免网络等待长期占用业务数据库连接。
+        return await self.mcp_service.load_runtime_langchain_tools(mcp_tool_codes)
 
     async def invoke_tool(self, tool_name: str, args: dict[str, Any], db: Session | None = None) -> Any:
         """从工具管理页测试调用一个工具。

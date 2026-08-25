@@ -5,6 +5,7 @@ from typing import Any, AsyncIterator
 from langgraph.types import Command
 from sqlmodel import Session
 
+from app.common.db.postgres_db import postgres_transaction
 from app.server.agent.src.agent.assembler import AgentAssembler
 from app.server.agent.src.agent.streaming import AgentStreamEventParser
 from app.server.agent.src.context import AgentContextService
@@ -169,7 +170,7 @@ class AgentResumeService:
         self,
         *,
         db: Session,
-        run_row: Any,
+        conversation_id: str | None,
         context: AgentRuntimeContext,
         answer: str,
         elapsed_ms: float,
@@ -178,7 +179,7 @@ class AgentResumeService:
 
         Args:
             db: PostgreSQL Session。
-            run_row: 被恢复的运行记录。
+            conversation_id: 原运行绑定的业务会话 ID；为空时不写助手消息。
             context: 本次恢复使用的运行上下文。
             answer: Agent 恢复后的最终回答。
             elapsed_ms: 恢复阶段耗时，单位毫秒。
@@ -187,7 +188,7 @@ class AgentResumeService:
         await self.memory_service.save_interaction(context, answer)
 
         assistant_message_id: str | None = None
-        if getattr(run_row, "conversation_id", None):
+        if conversation_id:
             assistant_message = self.context_service.add_assistant_message(
                 db,
                 conversation_id=context.thread_id,
@@ -204,38 +205,88 @@ class AgentResumeService:
             elapsed_ms=elapsed_ms,
         )
 
-    def _mark_resume_failed(self, db: Session | None, run_id: str, error: Exception, elapsed_ms: float) -> None:
+    def _mark_resume_failed(self, db: Session, run_id: str, error: Exception, elapsed_ms: float) -> None:
         """把恢复失败写回 agent_runs。
 
         Args:
-            db: PostgreSQL Session；为空时不写库。
+            db: PostgreSQL Session。
             run_id: 被恢复的运行 ID。
             error: 恢复执行异常。
             elapsed_ms: 恢复失败前耗时。
         """
-        if db is None:
-            return
         self.run_service.mark_failed(db, run_id=run_id, error_message=str(error), elapsed_ms=elapsed_ms)
 
-    async def resume(self, request: AgentResumeRequest, db: Session | None = None) -> AgentRunResponse:
+    async def _finalize_resume_with_short_transaction(
+        self,
+        *,
+        conversation_id: str | None,
+        context: AgentRuntimeContext,
+        answer: str,
+        elapsed_ms: float,
+    ) -> None:
+        """使用独立短事务完成恢复成功落库。
+
+        Args:
+            conversation_id: 原运行绑定的业务会话 ID。
+            context: 恢复运行上下文。
+            answer: 恢复后的最终回答。
+            elapsed_ms: 恢复阶段耗时。
+        """
+        with postgres_transaction() as final_db:
+            await self._finalize_resume_run(
+                db=final_db,
+                conversation_id=conversation_id,
+                context=context,
+                answer=answer,
+                elapsed_ms=elapsed_ms,
+            )
+
+    def _record_resume_failure(
+        self,
+        *,
+        run_id: str,
+        error: Exception,
+        elapsed_ms: float,
+    ) -> None:
+        """使用独立短事务写入恢复失败状态。
+
+        Args:
+            run_id: 被恢复的运行 ID。
+            error: 恢复执行异常。
+            elapsed_ms: 恢复失败前耗时。
+        """
+        with postgres_transaction() as final_db:
+            self._mark_resume_failed(final_db, run_id, error, elapsed_ms)
+
+    async def resume(
+        self,
+        request: AgentResumeRequest,
+    ) -> AgentRunResponse:
         """非流式恢复被中断的 Agent 运行。
 
         Args:
             request: 中断恢复请求。
-            db: PostgreSQL Session。
 
         Returns:
             AgentRunResponse，包含原 run_id 和恢复后的最终回答。
         """
-        if db is None:
-            raise RuntimeError("/agent/resume 需要数据库会话")
         run_started_at = time.perf_counter()
-        run_row = self._get_interrupted_run(db, request)
-        resume_run_request = self._build_resume_request_from_run(run_row, request)
-        context = self._build_resume_context(run_row, request, resume_run_request)
-        assembly = await self.assembler.assemble(resume_run_request, context, db)
-
+        context = None
+        conversation_id: str | None = None
         try:
+            # 恢复准备阶段只读取原运行快照并重新组装 Agent；退出 with 后，
+            # LangGraph checkpoint 恢复和模型执行不会持有业务数据库 Session。
+            with postgres_transaction() as start_db:
+                run_row = self._get_interrupted_run(start_db, request)
+                conversation_id = getattr(run_row, "conversation_id", None)
+                resume_run_request = self._build_resume_request_from_run(run_row, request)
+                context = self._build_resume_context(run_row, request, resume_run_request)
+
+            # 原运行快照读取事务已关闭，重新组装和恢复执行不再持有业务 Session。
+            assembly = await self.assembler.assemble(resume_run_request, context)
+
+            if context is None:
+                raise RuntimeError("Agent 恢复上下文初始化失败")
             result = await assembly.agent.ainvoke(
                 Command(resume=request.resume_value),
                 config={
@@ -246,33 +297,51 @@ class AgentResumeService:
             )
         except Exception as error:
             elapsed_ms = (time.perf_counter() - run_started_at) * 1000
-            self._mark_resume_failed(db, context.run_id, error, elapsed_ms)
+            self._record_resume_failure(
+                run_id=context.run_id if context is not None else request.run_id,
+                error=error,
+                elapsed_ms=elapsed_ms,
+            )
             raise
 
         answer = self._extract_answer_from_result(result)
         elapsed_ms = (time.perf_counter() - run_started_at) * 1000
-        await self._finalize_resume_run(db=db, run_row=run_row, context=context, answer=answer, elapsed_ms=elapsed_ms)
+        await self._finalize_resume_with_short_transaction(
+            conversation_id=conversation_id,
+            context=context,
+            answer=answer,
+            elapsed_ms=elapsed_ms,
+        )
         return AgentRunResponse(run_id=context.run_id, answer=answer)
 
-    async def resume_stream(self, request: AgentResumeRequest, db: Session | None = None) -> AsyncIterator[dict[str, Any]]:
+    async def resume_stream(
+        self,
+        request: AgentResumeRequest,
+    ) -> AsyncIterator[dict[str, Any]]:
         """流式恢复被中断的 Agent 运行。
 
         Args:
             request: 中断恢复请求。
-            db: PostgreSQL Session。
 
         Yields:
             标准化 SSE 事件字典。
         """
-        if db is None:
-            yield {"type": "error", "data": {"run_id": request.run_id, "message": "/agent/resume 需要数据库会话"}}
-            return
-
         run_started_at = time.perf_counter()
+        context = None
+        conversation_id: str | None = None
+        answer_parts: list[str] = []
         try:
-            run_row = self._get_interrupted_run(db, request)
-            resume_run_request = self._build_resume_request_from_run(run_row, request)
-            context = self._build_resume_context(run_row, request, resume_run_request)
+            # 必须在发送第一个 SSE 事件前退出短事务，防止生成器暂停时占用连接。
+            with postgres_transaction() as start_db:
+                run_row = self._get_interrupted_run(start_db, request)
+                conversation_id = getattr(run_row, "conversation_id", None)
+                resume_run_request = self._build_resume_request_from_run(run_row, request)
+                context = self._build_resume_context(run_row, request, resume_run_request)
+
+            if context is None:
+                raise RuntimeError("Agent 恢复上下文初始化失败")
+
+            # 原运行快照读取事务已经关闭，可以立即把原 run_id 返回给客户端。
             yield {
                 "type": "resume_start",
                 "data": {
@@ -282,7 +351,8 @@ class AgentResumeService:
                 },
             }
 
-            assembly = await self.assembler.assemble(resume_run_request, context, db)
+            # 重新组装和恢复执行发生在开始事务关闭之后，不会持有业务 Session。
+            assembly = await self.assembler.assemble(resume_run_request, context)
             yield {
                 "type": "agent_assembled",
                 "data": {
@@ -291,7 +361,6 @@ class AgentResumeService:
                 },
             }
 
-            answer_parts: list[str] = []
             suppress_sub_agent_messages = context.inputs.get("_stream_scope") != "sub_agent"
             interrupted_payload: dict[str, Any] | None = None
             last_task_plan_signature: str | None = None
@@ -340,13 +409,14 @@ class AgentResumeService:
             elapsed_ms = (time.perf_counter() - run_started_at) * 1000
             if interrupted_payload is not None:
                 interrupt_type = str(interrupted_payload.get("type") or "unknown") if isinstance(interrupted_payload, dict) else "unknown"
-                self.run_service.mark_interrupted(
-                    db,
-                    run_id=context.run_id,
-                    interrupt_type=interrupt_type,
-                    interrupt_payload=interrupted_payload,
-                    elapsed_ms=elapsed_ms,
-                )
+                with postgres_transaction() as final_db:
+                    self.run_service.mark_interrupted(
+                        final_db,
+                        run_id=context.run_id,
+                        interrupt_type=interrupt_type,
+                        interrupt_payload=interrupted_payload,
+                        elapsed_ms=elapsed_ms,
+                    )
                 yield {
                     "type": "run_end",
                     "data": {
@@ -361,7 +431,12 @@ class AgentResumeService:
                 return
 
             answer = "".join(answer_parts)
-            await self._finalize_resume_run(db=db, run_row=run_row, context=context, answer=answer, elapsed_ms=elapsed_ms)
+            await self._finalize_resume_with_short_transaction(
+                conversation_id=conversation_id,
+                context=context,
+                answer=answer,
+                elapsed_ms=elapsed_ms,
+            )
             yield {
                 "type": "run_end",
                 "data": {
@@ -375,7 +450,11 @@ class AgentResumeService:
         except Exception as error:
             elapsed_ms = (time.perf_counter() - run_started_at) * 1000
             logger.exception("Agent 恢复执行失败: run_id=%s thread_id=%s", request.run_id, request.thread_id)
-            self._mark_resume_failed(db, request.run_id, error, elapsed_ms)
+            self._record_resume_failure(
+                run_id=request.run_id,
+                error=error,
+                elapsed_ms=elapsed_ms,
+            )
             yield {
                 "type": "error",
                 "data": {

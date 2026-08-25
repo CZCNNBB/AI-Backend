@@ -17,9 +17,9 @@ class KnowledgeBaseRepository:
     """知识库定义数据访问层。"""
 
     def add(self, db: Session, record: KnowledgeBase) -> KnowledgeBase:
-        """新增知识库记录。"""
+        """在当前事务中新增知识库记录，提交由上层业务边界负责。"""
         db.add(record)
-        db.commit()
+        db.flush()
         db.refresh(record)
         return record
 
@@ -27,7 +27,7 @@ class KnowledgeBaseRepository:
         """保存知识库基础信息或生命周期状态变化。"""
         record.updated_at = utc_now()
         db.add(record)
-        db.commit()
+        db.flush()
         db.refresh(record)
         return record
 
@@ -64,9 +64,9 @@ class KnowledgeDocumentRepository:
     """知识库文件关系和索引状态数据访问层。"""
 
     def add(self, db: Session, record: KnowledgeDocument) -> KnowledgeDocument:
-        """新增知识库文件关系。"""
+        """在当前事务中新增知识库文件关系，提交由上层业务边界负责。"""
         db.add(record)
-        db.commit()
+        db.flush()
         db.refresh(record)
         return record
 
@@ -114,7 +114,7 @@ class KnowledgeDocumentRepository:
         """保存文档索引状态变化。"""
         record.updated_at = utc_now()
         db.add(record)
-        db.commit()
+        db.flush()
         db.refresh(record)
         return record
 

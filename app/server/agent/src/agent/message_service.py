@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, AsyncIterator, Literal
 
 from sqlmodel import Session
 
+from app.common.db.postgres_db import postgres_transaction
 from app.server.agent.src.runs import AgentRun, AgentRunService
 from app.server.agent.src.schemas.request import AgentMessageRequest, AgentResumeRequest, AgentRunRequest
 from app.server.agent.src.schemas.response import AgentRunResponse
@@ -36,39 +37,58 @@ class AgentMessageService:
         self.agent_service = agent_service
         self.run_service = run_service or AgentRunService()
 
-    async def run_message(self, request: AgentMessageRequest, db: Session) -> AgentRunResponse:
+    async def run_message(self, request: AgentMessageRequest) -> AgentRunResponse:
         """处理非流式统一消息请求。
 
         Args:
             request: 统一消息请求。
-            db: PostgreSQL Session。
-
         Returns:
             AgentRunResponse。新任务返回新 run_id；中断恢复返回原 run_id。
         """
-        route_type, routed_request = self._route_message(request, db, stream=False)
+        route_type, routed_request = self._route_message_with_short_session(request, stream=False)
         if route_type == "resume":
-            return await self.agent_service.resume(routed_request, db)
-        return await self.agent_service.run(routed_request, db)
+            return await self.agent_service.resume(routed_request)
+        return await self.agent_service.run(routed_request)
 
-    async def stream_message(self, request: AgentMessageRequest, db: Session) -> AsyncIterator[dict[str, object]]:
+    async def stream_message(
+        self,
+        request: AgentMessageRequest,
+    ) -> AsyncIterator[dict[str, object]]:
         """处理流式统一消息请求。
 
         Args:
             request: 统一消息请求。
-            db: PostgreSQL Session。
-
         Yields:
             标准化 Agent 流式事件。
         """
-        route_type, routed_request = self._route_message(request, db, stream=True)
+        route_type, routed_request = self._route_message_with_short_session(request, stream=True)
         if route_type == "resume":
-            async for event in self.agent_service.resume_stream(routed_request, db):
+            async for event in self.agent_service.resume_stream(routed_request):
                 yield event
             return
 
-        async for event in self.agent_service.stream(routed_request, db):
+        async for event in self.agent_service.stream(routed_request):
             yield event
+
+    def _route_message_with_short_session(
+        self,
+        request: AgentMessageRequest,
+        *,
+        stream: bool,
+    ) -> MessageRoute:
+        """使用短事务判断本次消息应创建新运行还是恢复中断运行。
+
+        Args:
+            request: 统一消息请求。
+            stream: 是否流式返回。
+
+        Returns:
+            二元组：(run/resume, 对应的底层请求对象)。
+        """
+        # 路由阶段只查询一次 agent_runs。必须在 with 块内完成请求对象构建，
+        # 避免把仍绑定 Session 的 ORM 对象带到后续 SSE 生成器中。
+        with postgres_transaction() as route_db:
+            return self._route_message(request, route_db, stream=stream)
 
     def _route_message(self, request: AgentMessageRequest, db: Session, *, stream: bool) -> MessageRoute:
         """判断统一消息应该创建新运行还是恢复中断运行。

@@ -55,7 +55,8 @@ class AgentRunService:
             extra_metadata=metadata or {},
         )
         db.add(row)
-        db.commit()
+        # 运行记录会和同阶段的会话、消息一起提交，避免阶段内出现部分成功。
+        db.flush()
         db.refresh(row)
         return row
 
@@ -90,7 +91,7 @@ class AgentRunService:
         row.elapsed_ms = elapsed_ms
         row.finished_at = datetime.now()
         db.add(row)
-        db.commit()
+        db.flush()
         db.refresh(row)
         return row
 
@@ -114,7 +115,7 @@ class AgentRunService:
         row.elapsed_ms = elapsed_ms
         row.finished_at = datetime.now()
         db.add(row)
-        db.commit()
+        db.flush()
         db.refresh(row)
         return row
 
@@ -150,7 +151,7 @@ class AgentRunService:
         row.elapsed_ms = elapsed_ms
         row.extra_metadata = metadata
         db.add(row)
-        db.commit()
+        db.flush()
         db.refresh(row)
         return row
 

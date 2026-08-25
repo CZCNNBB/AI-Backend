@@ -2,7 +2,6 @@ import logging
 import time
 
 from langchain.agents import create_agent
-from sqlmodel import Session
 
 from app.server.agent.src.agent.assembly import AgentAssembly
 from app.server.agent.src.checkpoint import AgentCheckpointService
@@ -60,7 +59,6 @@ class AgentAssembler:
         self,
         request: AgentRunRequest,
         context: AgentRuntimeContext,
-        db: Session | None = None,
     ) -> AgentAssembly:
         """执行完整的 Agent 组装流程。
 
@@ -114,7 +112,7 @@ class AgentAssembler:
 
         # 第三步：按工具白名单加载本次可用工具。
         # 复制工具列表，避免动态追加内置工具时污染 ToolService 的缓存对象。
-        tools = list(await self.tool_service.get_tools(build_config.tool_names, db=db))
+        tools = list(await self.tool_service.get_tools(build_config.tool_names))
         logger.info(
             "工具加载完成: thread_id=%s requested=%d loaded=%d names=%s",
             context.thread_id,
@@ -160,7 +158,6 @@ class AgentAssembler:
 
         # 第四步：创建主聊天模型。
         model = self.model_service.create_chat_model(
-            db=db,
             model_code=request.runtime_options.model_code,
             temperature=request.runtime_options.temperature,
             timeout_seconds=request.runtime_options.timeout_seconds,
@@ -172,7 +169,6 @@ class AgentAssembler:
         summary_model = None
         if build_config.context_summarization is not None and request.conversation_id:
             summary_model = self.model_service.create_chat_model(
-                db=db,
                 model_code=build_config.context_summarization.model_code,
                 temperature=0,
                 timeout_seconds=request.runtime_options.timeout_seconds,
@@ -264,5 +260,4 @@ class AgentAssembler:
                 "conversation_id_present": request.conversation_id is not None,
             },
         )
-
 

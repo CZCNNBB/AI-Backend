@@ -38,9 +38,9 @@ class ModelConfigRepository:
         return db.exec(sql).first()
 
     def save(self, db: Session, record: ModelConfigRecord) -> ModelConfigRecord:
-        """保存模型配置并刷新数据库生成字段。"""
+        """暂存模型配置并刷新数据库生成字段，提交由上层事务边界负责。"""
         db.add(record)
-        db.commit()
+        db.flush()
         db.refresh(record)
         return record
 
@@ -144,5 +144,5 @@ class ModelConfigRepository:
         ).all()
         for row in rows:
             db.delete(row)
-        db.commit()
+        db.flush()
         return len(rows)

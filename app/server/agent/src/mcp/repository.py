@@ -15,9 +15,9 @@ class MCPRepository:
         return db.exec(sql).first()
 
     def save_tool(self, db: Session, record: AgentMCPToolRecord) -> AgentMCPToolRecord:
-        """保存 MCP 工具配置并刷新数据库生成字段。"""
+        """暂存 MCP 工具配置并刷新数据库生成字段，提交由上层事务边界负责。"""
         db.add(record)
-        db.commit()
+        db.flush()
         db.refresh(record)
         return record
 
@@ -122,5 +122,5 @@ class MCPRepository:
         tools = db.exec(select(AgentMCPToolRecord).where(col(AgentMCPToolRecord.mcp_code).in_(normalized_codes))).all()
         for tool in tools:
             db.delete(tool)
-        db.commit()
+        db.flush()
         return len(tools)

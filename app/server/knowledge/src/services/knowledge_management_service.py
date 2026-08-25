@@ -76,7 +76,12 @@ class KnowledgeManagementService:
         )
         try:
             saved = self.knowledge_repository.add(db, record)
+            # Collection 已经创建，必须在 Service 边界显式提交数据库记录，
+            # 这样提交失败时才能在当前方法内删除外部 Collection 进行补偿。
+            db.commit()
+            db.refresh(saved)
         except Exception:
+            db.rollback()
             # PostgreSQL 写入失败时回收刚创建的 Collection，避免留下孤儿资源。
             await vector_store_service.drop_collection(collection_name)
             raise
@@ -128,6 +133,9 @@ class KnowledgeManagementService:
         # 先禁用检索入口；外部资源清理失败时也不会继续参与业务调用。
         record.status = "disabled"
         self.knowledge_repository.update(db, record)
+        # 禁用状态必须先独立提交，再执行可能较慢的 Milvus 网络调用。
+        # 这既保证其他请求立即停止检索，也避免跨外部调用长期持有数据库事务。
+        db.commit()
         await vector_store_service.drop_collection(record.collection_name)
         try:
             self.chunk_repository.delete_knowledge_chunks(db, knowledge_id)

@@ -127,17 +127,20 @@ def _format_sse_event(event: dict[str, Any]) -> str:
 
 
 @router.post("/messages", response_model=Result[AgentRunResponse], summary="发送 Agent 消息")
-async def send_agent_message(request: AgentMessageRequest, db: Session = Depends(get_postgres_engine)):
+async def send_agent_message(request: AgentMessageRequest):
     """统一 Agent 消息入口。
 
     前端只需要调用该接口：
     - 当前会话没有待恢复中断时，后端自动创建新的 Agent 运行。
     - 当前会话存在 interrupted 运行时，后端自动转换为 Command(resume=...) 恢复执行。
+
+    注意：该长耗时接口不能注入请求级数据库 Session。AgentMessageService 会在
+    路由、运行开始和运行结束阶段分别创建短事务，SSE 流式执行期间不持有业务连接。
     """
     if request.stream:
         async def event_generator():
             """按 SSE 格式逐条产出 Agent 消息处理事件。"""
-            async for event in agent_message_service.stream_message(request, db):
+            async for event in agent_message_service.stream_message(request):
                 yield _format_sse_event(event)
 
         return StreamingResponse(
@@ -150,5 +153,5 @@ async def send_agent_message(request: AgentMessageRequest, db: Session = Depends
             },
         )
 
-    result = await agent_message_service.run_message(request, db)
+    result = await agent_message_service.run_message(request)
     return Result.success(result)

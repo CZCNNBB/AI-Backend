@@ -7,9 +7,9 @@ class FileRepository:
     """文件记录数据访问层。"""
 
     def add(self, db: Session, record: UploadedFileRecord) -> UploadedFileRecord:
-        """新增文件记录。"""
+        """在当前事务中新增文件记录，提交由上层业务边界负责。"""
         db.add(record)
-        db.commit()
+        db.flush()
         db.refresh(record)
         return record
 
@@ -26,9 +26,9 @@ class FileRepository:
         return list(db.exec(statement).all())
 
     def update(self, db: Session, record: UploadedFileRecord) -> UploadedFileRecord:
-        """更新文件记录。"""
+        """在当前事务中更新文件记录，提交由上层业务边界负责。"""
         db.add(record)
-        db.commit()
+        db.flush()
         db.refresh(record)
         return record
 
@@ -38,5 +38,5 @@ class FileRepository:
             return 0
         statement = delete(UploadedFileRecord).where(UploadedFileRecord.file_id.in_(file_ids))
         result = db.exec(statement)
-        db.commit()
+        db.flush()
         return int(result.rowcount or 0)

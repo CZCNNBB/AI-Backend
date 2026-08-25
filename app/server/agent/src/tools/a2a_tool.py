@@ -19,10 +19,11 @@ def _mark_agent_run_success(run_id: str, output_text: str, elapsed_ms: float) ->
         output_text: 子 Agent 最终输出文本。
         elapsed_ms: 子 Agent 调用耗时，单位毫秒。
     """
-    from app.common.db.postgres_db import get_db_session
+    from app.common.db.postgres_db import postgres_transaction
     from app.server.agent.src.runs import AgentRunService
 
-    with get_db_session() as db:
+    # A2A 状态更新不经过 HTTP 依赖，必须显式建立短事务并在退出时提交。
+    with postgres_transaction() as db:
         AgentRunService().mark_success(db, run_id=run_id, answer=output_text, elapsed_ms=elapsed_ms)
 
 
@@ -34,10 +35,11 @@ def _mark_agent_run_failed(run_id: str, error_message: str, elapsed_ms: float) -
         error_message: 子 Agent 调用失败原因。
         elapsed_ms: 子 Agent 调用失败前耗时，单位毫秒。
     """
-    from app.common.db.postgres_db import get_db_session
+    from app.common.db.postgres_db import postgres_transaction
     from app.server.agent.src.runs import AgentRunService
 
-    with get_db_session() as db:
+    # 失败状态单独落库，避免子 Agent 异常导致运行记录永久停留在 running。
+    with postgres_transaction() as db:
         AgentRunService().mark_failed(db, run_id=run_id, error_message=error_message, elapsed_ms=elapsed_ms)
 
 
@@ -63,7 +65,7 @@ async def a2a_call(agent_id: str, query: str, runtime: ToolRuntime) -> str:
     Returns:
         子 Agent 的最终文本回答；校验失败或调用失败时返回错误说明文本。
     """
-    from app.common.db.postgres_db import get_db_session
+    from app.common.db.postgres_db import postgres_transaction
     from app.server.agent.src.agent.service import AgentService
     from app.server.agent.src.runs import AgentRunService
     from app.server.agent.src.schemas.request import AgentKnowledgeConfig, AgentRunRequest
@@ -93,7 +95,8 @@ async def a2a_call(agent_id: str, query: str, runtime: ToolRuntime) -> str:
 
     # 校验：模板必须存在，并且明确声明自己可以作为子 Agent 被调用。
     # 校验通过后立即写入 agent_runs(run_type=sub)，保证后续模型调用失败也能追踪到这次子任务。
-    with get_db_session() as db:
+    # 模板校验和子运行记录创建属于一个短事务；模型执行发生在事务关闭之后。
+    with postgres_transaction() as db:
         template_service = AgentTemplateService()
         template_view = template_service.get_template(db, agent_id)
         if template_view is None:
@@ -115,7 +118,7 @@ async def a2a_call(agent_id: str, query: str, runtime: ToolRuntime) -> str:
         )
 
     # 子 Agent 不传 conversation_id，因此 AgentAssembler 不会挂 PostgreSQL checkpointer。
-    # db=None 表示不写 agent_conversations/agent_messages，也不额外创建主运行记录。
+    # A2A 子 Agent 不写 agent_conversations/agent_messages，也不额外创建主运行记录。
     sub_request = AgentRunRequest(
         query=query,
         conversation_id=None,
@@ -172,7 +175,11 @@ async def a2a_call(agent_id: str, query: str, runtime: ToolRuntime) -> str:
         })
 
     try:
-        async for event in sub_service.stream(sub_request, db=None):
+        # A2A 子运行的台账已经由本工具单独创建和更新，子 AgentService 不再重复写主运行记录。
+        async for event in sub_service.stream(
+            sub_request,
+            persist_business_records=False,
+        ):
             # 子 Agent 自己产出的标准事件统一包成 sub_agent_event 交给前端。
             write_sub_agent_event(event)
             if event.get("type") == "model_delta":
