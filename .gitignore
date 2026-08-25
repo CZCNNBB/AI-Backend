@@ -1,0 +1,53 @@
+# Python 字节码和解释器缓存
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Python 测试、类型检查和覆盖率缓存
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# 本地 Python/Conda 虚拟环境
+.venv/
+venv/
+env/
+.conda/
+
+# 本地环境变量和敏感配置；示例文件继续纳入版本管理
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+secrets/
+credentials/
+
+# 前端依赖、构建产物和工具缓存
+web/node_modules/
+web/dist/
+web/.vite/
+
+# 运行日志和临时文件
+*.log
+*.tmp
+*.temp
+*.bak
+data/uploads/
+data/tmp/
+
+# 常见本地数据库文件
+*.sqlite
+*.sqlite3
+
+# 编辑器和操作系统生成文件
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*~

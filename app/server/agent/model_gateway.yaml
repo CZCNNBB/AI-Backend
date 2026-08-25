@@ -1,0 +1,46 @@
+defaults:
+  chat: chat_main
+  embedding: embed_search
+  rerank: rerank_default
+
+models:
+  chat_main:
+    kind: llm
+    provider: openai_compatible
+    base_url: https://ai-test-llm.hnholdtech.com
+    model: chat_main
+    api_key: "sk-Ab7W1o4sS8OlJ6CORqC4Ww"
+    timeout: 360
+
+  intent_router:
+    kind: llm
+    provider: openai_compatible
+    base_url: https://ai-test-llm.hnholdtech.com
+    model: intent_router
+    api_key: "sk-Ab7W1o4sS8OlJ6CORqC4Ww"
+    timeout: 360
+
+  guard:
+    kind: llm
+    provider: openai_compatible
+    base_url: https://ai-test-llm.hnholdtech.com
+    model: guard
+    api_key: "sk-Ab7W1o4sS8OlJ6CORqC4Ww"
+    timeout: 360
+
+  embed_search:
+    kind: embedding
+    provider: openai_compatible
+    base_url: https://ai-test-llm.hnholdtech.com
+    model: embedding
+    api_key: "sk-Ab7W1o4sS8OlJ6CORqC4Ww"
+    timeout: 360
+    dimension: 1024
+
+  rerank_default:
+    kind: reranker
+    provider: http_reranker
+    base_url: https://ai-test-llm.hnholdtech.com/rerank
+    model: reranker
+    api_key: "sk-Ab7W1o4sS8OlJ6CORqC4Ww"
+    timeout: 360

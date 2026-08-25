@@ -1,0 +1,75 @@
+name: release-main
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  ci:
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+
+    steps:
+      - name: Checkout 🛎
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup node env 🏗
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          check-latest: true
+
+      - name: Setup pnpm 📦
+        uses: pnpm/action-setup@v4
+        with:
+          package_json_file: package.json
+
+      - name: Install dependencies 📦
+        run: pnpm install
+
+      - name: Quality gate 👀
+        run: pnpm run quality
+  release:
+    runs-on: ${{ matrix.os }}
+    needs: ci
+
+    permissions:
+      id-token: write
+      contents: write
+
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+
+    steps:
+      - name: Checkout 🛎
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup node env 🏗
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          check-latest: true
+
+      - name: Setup pnpm 📦
+        uses: pnpm/action-setup@v4
+        with:
+          package_json_file: package.json
+
+      - name: Install dependencies 📦
+        run: pnpm install
+
+      - name: Install semantic-release extra plugins 📦
+        run: pnpm install --save-dev semantic-release @semantic-release/changelog @semantic-release/git
+
+      - name: Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx semantic-release
