@@ -12,15 +12,17 @@ from app.server.agent.src.agent import AgentMessageService, AgentService
 from app.server.agent.src.model import ModelConfigService
 from app.server.agent.src.model.schemas import ModelConfigSearchRequest
 from app.server.agent.src.schemas.request import AgentMessageRequest
-from app.server.agent.src.mcp.schemas import AgentMCPToolSearchRequest
 from app.server.agent.src.schemas.response import AgentCapabilityResponse, AgentRunResponse, ModelConfigResponse
 from app.server.agent.src.tools.schemas import AgentToolInfo
+from app.server.fastmcp.src.schemas import MCPToolSearchRequest
+from app.server.fastmcp.src.service import MCPToolService
 
 
 router = APIRouter()
 agent_service = AgentService()
 agent_message_service = AgentMessageService(agent_service=agent_service)
 model_config_service = ModelConfigService()
+mcp_tool_service = MCPToolService()
 
 
 @router.get("/health", response_model=Result[dict], summary="Agent 服务健康检查")
@@ -91,19 +93,19 @@ def get_agent_capabilities(db: Session = Depends(get_postgres_engine)):
 
 def _list_mcp_tool_details(db: Session) -> list[AgentToolInfo]:
     """查询已启用 MCP 工具，并转换为工具管理页可展示结构。"""
-    result = agent_service.tool_service.mcp_service.search_tools(
+    result = mcp_tool_service.search_tools(
         db,
-        AgentMCPToolSearchRequest(status="enabled", page=1, page_size=100),
+        MCPToolSearchRequest(status="enabled", page=1, page_size=100),
     )
     return [
         AgentToolInfo(
-            name=item.mcp_code,
+            name=item.name,
             description=item.description or "",
             group="mcp",
             invokable=True,
             template_selectable=True,
             activation_mode="template",
-            invoke_note=f"MCP 外部工具，真实工具名：{item.name}",
+            invoke_note="MCP 外部工具，名称同时作为 Agent 配置中的稳定标识。",
             args_schema=_normalize_tool_schema(item.input_schema),
         )
         for item in result.items

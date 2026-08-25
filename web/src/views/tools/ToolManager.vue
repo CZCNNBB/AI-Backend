@@ -1,22 +1,12 @@
-<!--
-  工具管理页
-  - 只展示 MCP 外接工具，内置能力工具不在工具管理页展示
-  - 支持从 MCP 地址同步工具，也支持手动新增 MCP 工具
-  - 工具测试统一使用 JSON 参数，Schema 只作为参考
-  - 调试调用 POST /agent/tools/invoke，后端会分发到对应 MCP 工具
--->
+<!-- HTTP API 转 MCP Tool 管理页面。 -->
 <template>
   <div>
     <div class="page-header">
-      <h2 class="page-title">工具管理</h2>
-      <a-space>
-        <a-button @click="openSyncModal">同步 MCP</a-button>
-        <a-button type="primary" @click="openCreateModal">新增 MCP 工具</a-button>
-      </a-space>
+      <h2 class="page-title">MCP 工具管理</h2>
+      <a-button type="primary" @click="openCreateModal">新增 API 工具</a-button>
     </div>
 
     <a-row :gutter="16">
-      <!-- 左侧：工具列表 -->
       <a-col :span="9">
         <a-card title="工具列表" :loading="loading">
           <a-empty v-if="!tools.length" description="暂无工具" />
@@ -30,12 +20,11 @@
                   <template #title>
                     <a-space>
                       <span>{{ item.name }}</span>
-                      <a-tag :color="toolGroupColor(item.group)">{{ item.group }}</a-tag>
-                      <a-tag v-if="!item.invokable" color="orange">动态</a-tag>
+                      <a-tag :color="statusColor(item.status)">{{ statusText(item.status) }}</a-tag>
                     </a-space>
                   </template>
                   <template #description>
-                    <div class="tool-desc">{{ shortDescription(item.description) }}</div>
+                    <div class="tool-desc">{{ item.http_method }} {{ item.api_url }}</div>
                   </template>
                 </a-list-item-meta>
               </a-list-item>
@@ -44,55 +33,56 @@
         </a-card>
       </a-col>
 
-      <!-- 右侧：工具详情和调试区 -->
       <a-col :span="15">
         <a-card :title="selectedTool ? `工具详情 - ${selectedTool.name}` : '工具详情'">
           <a-empty v-if="!selectedTool" description="请先选择左侧工具" />
           <div v-else>
             <a-descriptions :column="1" size="small" bordered class="mb-4">
-              <a-descriptions-item label="名称">{{ selectedTool.name }}</a-descriptions-item>
-              <a-descriptions-item label="分组">
-                <a-tag :color="toolGroupColor(selectedTool.group)">{{ selectedTool.group }}</a-tag>
+              <a-descriptions-item label="目标 API">
+                {{ selectedTool.http_method }} {{ selectedTool.api_url }}
               </a-descriptions-item>
-              <a-descriptions-item label="可直接调试">
-                <a-tag :color="selectedTool.invokable ? 'green' : 'orange'">
-                  {{ selectedTool.invokable ? '是' : '否' }}
-                </a-tag>
+              <a-descriptions-item label="状态">
+                <a-tag :color="statusColor(selectedTool.status)">{{ statusText(selectedTool.status) }}</a-tag>
               </a-descriptions-item>
-              <a-descriptions-item v-if="selectedTool.invoke_note" label="调用说明">
-                {{ selectedTool.invoke_note }}
-              </a-descriptions-item>
-              <a-descriptions-item label="说明">
-                <pre class="description-box">{{ selectedTool.description || '暂无说明' }}</pre>
-              </a-descriptions-item>
+              <a-descriptions-item label="说明">{{ selectedTool.description || '暂无说明' }}</a-descriptions-item>
+              <a-descriptions-item label="超时">{{ selectedTool.timeout_seconds }} 秒</a-descriptions-item>
             </a-descriptions>
 
+            <a-space class="mb-4">
+              <a-button
+                v-if="selectedTool.status !== 'enabled'"
+                type="primary"
+                @click="changePublishStatus(true)"
+              >发布 Tool</a-button>
+              <a-button v-else danger @click="changePublishStatus(false)">停用 Tool</a-button>
+            </a-space>
+
             <a-tabs>
-              <a-tab-pane key="json" tab="参数 JSON">
+              <a-tab-pane key="invoke" tab="调试调用">
                 <a-alert
-                  v-if="!selectedTool.invokable"
+                  v-if="selectedTool.status !== 'enabled'"
                   type="warning"
                   show-icon
                   class="mb-4"
-                  :message="selectedTool.invoke_note || '该工具不能脱离 Agent 运行上下文直接调用'"
+                  message="当前 Tool 尚未发布，请先发布后再通过 MCP 调用。"
                 />
-                <a-textarea
-                  v-model:value="argsJsonText"
-                  :rows="12"
-                  placeholder='例如：{"keywords":["FastAPI","PostgreSQL"]}'
-                  class="json-input"
-                />
+                <a-textarea v-model:value="argsJsonText" :rows="9" class="json-input" />
                 <a-space class="mt-3">
-                  <a-button type="primary" :loading="running" :disabled="!selectedTool.invokable" @click="onRun">
-                    调用工具
-                  </a-button>
+                  <a-button
+                    type="primary"
+                    :loading="running"
+                    :disabled="selectedTool.status !== 'enabled'"
+                    @click="onRun"
+                  >调用工具</a-button>
                   <a-button @click="resetArgsJson">重置参数</a-button>
                   <a-button @click="formatArgsJson">格式化 JSON</a-button>
                 </a-space>
               </a-tab-pane>
-
-              <a-tab-pane key="schema" tab="参数 Schema">
-                <pre class="result-box light">{{ prettyJson(selectedTool.args_schema || {}) }}</pre>
+              <a-tab-pane key="schema" tab="自动生成 Schema">
+                <pre class="result-box light">{{ prettyJson(selectedTool.input_schema || {}) }}</pre>
+              </a-tab-pane>
+              <a-tab-pane key="mapping" tab="参数映射">
+                <pre class="result-box light">{{ prettyJson(selectedTool.parameters || []) }}</pre>
               </a-tab-pane>
             </a-tabs>
 
@@ -107,137 +97,190 @@
     </a-row>
 
     <a-modal
-      v-model:open="syncModalOpen"
-      title="同步 MCP 工具"
-      :confirm-loading="syncing"
-      @ok="onSyncMcpTools"
-    >
-      <a-form layout="vertical">
-        <a-form-item label="MCP 服务地址" required>
-          <a-input v-model:value="syncForm.base_url" placeholder="http://127.0.0.1:8091/mcp/" allow-clear />
-        </a-form-item>
-        <a-form-item label="传输协议">
-          <a-select v-model:value="syncForm.transport" :options="transportOptions" />
-        </a-form-item>
-        <a-form-item label="工具编码前缀">
-          <a-input v-model:value="syncForm.code_prefix" placeholder="例如 job，同步后得到 job.search_job_skills" allow-clear />
-        </a-form-item>
-        <a-form-item label="覆盖已有工具">
-          <a-switch v-model:checked="syncForm.overwrite" />
-        </a-form-item>
-      </a-form>
-    </a-modal>
-
-    <a-modal
       v-model:open="createModalOpen"
-      title="新增 MCP 工具"
+      title="配置 HTTP API 为 MCP Tool"
       :confirm-loading="saving"
-      width="720px"
+      width="1000px"
       @ok="onCreateMcpTool"
     >
       <a-form layout="vertical">
         <a-row :gutter="12">
           <a-col :span="12">
-            <a-form-item label="平台工具编码" required>
-              <a-input v-model:value="createForm.mcp_code" placeholder="job.search_job_skills" allow-clear />
+            <a-form-item label="MCP Tool 名称" required>
+              <a-input v-model:value="createForm.name" placeholder="例如 search_jobs" />
             </a-form-item>
           </a-col>
-          <a-col :span="12">
-            <a-form-item label="MCP 真实工具名" required>
-              <a-input v-model:value="createForm.name" placeholder="search_job_skills" allow-clear />
+          <a-col :span="6">
+            <a-form-item label="HTTP 方法">
+              <a-select v-model:value="createForm.http_method" :options="httpMethodOptions" />
+            </a-form-item>
+          </a-col>
+          <a-col :span="6">
+            <a-form-item label="保存状态">
+              <a-select v-model:value="createForm.status" :options="statusOptions" />
             </a-form-item>
           </a-col>
         </a-row>
-        <a-form-item label="MCP 服务地址" required>
-          <a-input v-model:value="createForm.base_url" placeholder="http://127.0.0.1:8091/mcp/" allow-clear />
-        </a-form-item>
-        <a-form-item label="传输协议">
-          <a-select v-model:value="createForm.transport" :options="transportOptions" />
+
+        <a-form-item label="目标业务 API" required>
+          <a-input v-model:value="createForm.api_url" placeholder="http://127.0.0.1:8080/api/jobs/{job_id}" />
         </a-form-item>
         <a-form-item label="工具描述">
-          <a-textarea v-model:value="createForm.description" :rows="3" allow-clear />
+          <a-textarea v-model:value="createForm.description" :rows="2" />
         </a-form-item>
-        <a-form-item label="输入参数 JSON Schema">
-          <a-textarea v-model:value="createSchemaText" :rows="8" placeholder='例如：{"type":"object","properties":{"keywords":{"type":"array"}},"required":["keywords"]}' />
-        </a-form-item>
+
+        <a-divider orientation="left">参数映射</a-divider>
+        <a-alert
+          class="mb-4"
+          type="info"
+          show-icon
+          message="tool 由 Agent 填写；runtime 从 Agent inputs 注入；static 使用固定值。"
+        />
+        <div v-for="(parameter, index) in createForm.parameters" :key="index" class="parameter-row">
+          <a-row :gutter="8" align="middle">
+            <a-col :span="4"><a-input v-model:value="parameter.name" placeholder="Tool 参数名" /></a-col>
+            <a-col :span="4"><a-input v-model:value="parameter.target" placeholder="API 目标字段" /></a-col>
+            <a-col :span="3"><a-select v-model:value="parameter.source" :options="sourceOptions" /></a-col>
+            <a-col :span="3"><a-select v-model:value="parameter.location" :options="locationOptions" /></a-col>
+            <a-col :span="3"><a-select v-model:value="parameter.data_type" :options="parameterTypeOptions" /></a-col>
+            <a-col :span="4">
+              <a-input
+                v-if="parameter.source === 'runtime'"
+                v-model:value="parameter.runtime_path"
+                placeholder="inputs 点分路径"
+              />
+              <a-input
+                v-else-if="parameter.source === 'static'"
+                v-model:value="parameter.value"
+                placeholder="固定值"
+              />
+              <a-switch
+                v-else
+                v-model:checked="parameter.required"
+                checked-children="必填"
+                un-checked-children="可选"
+              />
+            </a-col>
+            <a-col :span="3"><a-button danger @click="removeParameter(index)">删除</a-button></a-col>
+          </a-row>
+          <a-input v-model:value="parameter.description" class="mt-2" placeholder="参数说明（给 Agent 阅读）" />
+        </div>
+        <a-button block type="dashed" @click="addParameter">新增参数</a-button>
+
+        <a-divider orientation="left">请求头与认证</a-divider>
+        <a-row :gutter="12">
+          <a-col :span="12">
+            <a-form-item label="固定请求头 JSON">
+              <a-textarea v-model:value="staticHeadersText" :rows="4" placeholder='{"X-App-Id":"ai-platform"}' />
+            </a-form-item>
+          </a-col>
+          <a-col :span="12">
+            <a-form-item label="认证类型">
+              <a-select v-model:value="createForm.auth_type" :options="authTypeOptions" />
+            </a-form-item>
+            <a-form-item label="认证配置 JSON">
+              <a-textarea v-model:value="authConfigText" :rows="2" placeholder='Bearer：{"token":"..."}' />
+            </a-form-item>
+          </a-col>
+        </a-row>
+
+        <a-divider orientation="left">保存前测试</a-divider>
+        <a-row :gutter="12">
+          <a-col :span="12">
+            <a-form-item label="Tool 参数 JSON">
+              <a-textarea v-model:value="testArgsText" :rows="4" placeholder='{"keyword":"Python"}' />
+            </a-form-item>
+          </a-col>
+          <a-col :span="12">
+            <a-form-item label="模拟 runtime inputs JSON">
+              <a-textarea v-model:value="testRuntimeInputsText" :rows="4" placeholder='{"tenant_id":"t-001"}' />
+            </a-form-item>
+          </a-col>
+        </a-row>
+        <a-button :loading="testingApi" @click="onTestApi">测试 API 连通性</a-button>
+        <pre v-if="testApiResult" class="result-box mt-3">{{ testApiResult }}</pre>
       </a-form>
     </a-modal>
   </div>
 </template>
 
 <script setup lang="ts">
-/**
- * 工具管理页逻辑。
- * - 从 /agent/capabilities 读取 MCP 外接工具详情。
- * - 支持同步 MCP 服务工具和手动新增 MCP 工具。
- * - 使用 JSON 参数测试工具，避免为复杂 MCP Schema 维护沉重的动态表单。
- * - 通过 /agent/tools/invoke 调试调用 MCP 工具。
- */
 import { onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
-import { getCapabilities, type AgentToolInfo } from '@/api/capabilities'
-import { syncMcpTools, upsertMcpTool } from '@/api/mcp'
+import {
+  publishMcpTool,
+  searchMcpTools,
+  testMcpTool,
+  upsertMcpTool,
+  type McpToolParameter,
+  type McpToolUpsertRequest,
+  type McpToolView,
+} from '@/api/mcp'
 import { invokeAgentTool } from '@/api/tools'
 
 defineOptions({ name: 'ToolManagerView' })
 
 const loading = ref(false)
-const tools = ref<AgentToolInfo[]>([])
-const selectedTool = ref<AgentToolInfo | null>(null)
+const tools = ref<McpToolView[]>([])
+const selectedTool = ref<McpToolView | null>(null)
 const running = ref(false)
 const result = ref('')
 const argsJsonText = ref('{}')
-const syncModalOpen = ref(false)
 const createModalOpen = ref(false)
-const syncing = ref(false)
 const saving = ref(false)
-const createSchemaText = ref('')
+const testingApi = ref(false)
+const testApiResult = ref('')
+const staticHeadersText = ref('{}')
+const authConfigText = ref('{}')
+const testArgsText = ref('{}')
+const testRuntimeInputsText = ref('{}')
 
-const transportOptions = [
-  { label: 'http', value: 'http' },
-  { label: 'streamable-http', value: 'streamable-http' },
-  { label: 'sse', value: 'sse' },
+const httpMethodOptions = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map((value) => ({ label: value, value }))
+const statusOptions = [
+  { label: '草稿（测试后再发布）', value: 'draft' },
+  { label: '直接发布', value: 'enabled' },
+]
+const sourceOptions = [
+  { label: 'Agent 参数', value: 'tool' },
+  { label: 'Runtime inputs', value: 'runtime' },
+  { label: '固定值', value: 'static' },
+]
+const locationOptions = ['path', 'query', 'header', 'body'].map((value) => ({ label: value, value }))
+const parameterTypeOptions = ['string', 'integer', 'number', 'boolean', 'object', 'array'].map((value) => ({ label: value, value }))
+const authTypeOptions = [
+  { label: '无认证', value: 'none' },
+  { label: 'Bearer Token', value: 'bearer' },
+  { label: 'Basic Auth', value: 'basic' },
+  { label: 'API Key', value: 'api_key' },
 ]
 
-const syncForm = reactive({
-  base_url: 'http://127.0.0.1:8091/mcp/',
-  transport: 'http',
-  code_prefix: 'job',
-  overwrite: true,
-})
+const createForm = reactive<McpToolUpsertRequest>(createEmptyForm())
 
-const createForm = reactive({
-  mcp_code: '',
-  name: '',
-  description: '',
-  base_url: 'http://127.0.0.1:8091/mcp/',
-  transport: 'http',
-  status: 'enabled',
-})
+/** 创建一份新的 API Tool 表单初始值。 */
+function createEmptyForm(): McpToolUpsertRequest {
+  return {
+    name: '',
+    description: '',
+    api_url: '',
+    http_method: 'POST',
+    static_headers: {},
+    parameters: [],
+    auth_type: 'none',
+    auth_config: {},
+    output_schema: null,
+    timeout_seconds: 30,
+    status: 'draft',
+  }
+}
 
-/** 加载工具详情列表。 */
+/** 加载包含草稿、已发布和已停用状态的工具列表。 */
 async function load() {
   loading.value = true
   try {
-    const cap = await getCapabilities()
-    // 工具管理页只管理 MCP 外接工具。
-    // A2A、规划等内置能力工具由系统参数自动挂载，不展示在这里，避免用户误配置到模板 tools。
-    const capabilityTools = cap.tools || []
-    tools.value = capabilityTools.length
-      ? capabilityTools.filter((tool) => tool.group === 'mcp' && tool.template_selectable !== false)
-      : (cap.registered_tools || []).map((name) => ({
-          name,
-          description: '',
-          group: 'mcp',
-          invokable: true,
-          template_selectable: true,
-          activation_mode: 'template',
-          invoke_note: null,
-          args_schema: {},
-        }))
-
-    if (selectedTool.value && !tools.value.some((tool) => tool.name === selectedTool.value?.name)) {
-      selectedTool.value = null
+    const response = await searchMcpTools()
+    tools.value = response.items || []
+    if (selectedTool.value) {
+      selectedTool.value = tools.value.find((item) => item.name === selectedTool.value?.name) || null
     }
     if (!selectedTool.value && tools.value.length) selectTool(tools.value[0])
   } finally {
@@ -245,230 +288,192 @@ async function load() {
   }
 }
 
-/** 打开 MCP 同步弹窗。 */
-function openSyncModal() {
-  syncModalOpen.value = true
-}
-
-/** 打开手动新增 MCP 工具弹窗。 */
+/** 打开新增 API Tool 弹窗并清理上一次输入。 */
 function openCreateModal() {
-  resetCreateForm()
+  Object.assign(createForm, createEmptyForm())
+  staticHeadersText.value = '{}'
+  authConfigText.value = '{}'
+  testArgsText.value = '{}'
+  testRuntimeInputsText.value = '{}'
+  testApiResult.value = ''
+  addParameter()
   createModalOpen.value = true
 }
 
-/** 重置手动新增 MCP 工具表单。 */
-function resetCreateForm() {
-  createForm.mcp_code = ''
-  createForm.name = ''
-  createForm.description = ''
-  createForm.base_url = syncForm.base_url
-  createForm.transport = syncForm.transport
-  createForm.status = 'enabled'
-  createSchemaText.value = ''
+/** 新增一行默认的 Agent 参数映射。 */
+function addParameter() {
+  createForm.parameters.push({
+    name: '',
+    target: '',
+    source: 'tool',
+    location: 'body',
+    data_type: 'string',
+    required: false,
+    description: '',
+  })
 }
 
-/** 从 MCP 服务地址同步工具列表。 */
-async function onSyncMcpTools() {
-  if (!syncForm.base_url.trim()) {
-    message.error('请填写 MCP 服务地址')
-    return
+/** 删除指定索引的参数映射。 */
+function removeParameter(index: number) {
+  createForm.parameters.splice(index, 1)
+}
+
+/** 构造保存和测试共用的规范化请求。 */
+function buildToolPayload(): McpToolUpsertRequest {
+  if (!createForm.name.trim() || !createForm.api_url.trim()) {
+    throw new Error('请填写 MCP Tool 名称和目标业务 API')
   }
-  syncing.value = true
-  try {
-    const res = await syncMcpTools({
-      base_url: syncForm.base_url.trim(),
-      transport: syncForm.transport,
-      code_prefix: syncForm.code_prefix?.trim() || null,
-      auth_type: null,
-      auth_config: null,
-      overwrite: syncForm.overwrite,
-    })
-    message.success(`同步完成，共 ${res.synced} 个工具`)
-    syncModalOpen.value = false
-    await load()
-  } finally {
-    syncing.value = false
+  const normalizedParameters = createForm.parameters
+    .filter((parameter) => parameter.name.trim())
+    .map((parameter) => ({
+      ...parameter,
+      name: parameter.name.trim(),
+      target: parameter.target?.trim() || parameter.name.trim(),
+      description: parameter.description?.trim() || null,
+      runtime_path: parameter.runtime_path?.trim() || null,
+    }))
+  return {
+    ...createForm,
+    name: createForm.name.trim(),
+    description: createForm.description?.trim() || null,
+    api_url: createForm.api_url.trim(),
+    static_headers: parseJsonObject(staticHeadersText.value, '固定请求头 JSON'),
+    auth_config: parseJsonObject(authConfigText.value, '认证配置 JSON'),
+    parameters: normalizedParameters,
   }
 }
 
-/** 手动新增或更新 MCP 工具。 */
+/** 保存 API Tool 配置；enabled 状态会立即热发布到 /mcp。 */
 async function onCreateMcpTool() {
-  if (!createForm.mcp_code.trim() || !createForm.name.trim() || !createForm.base_url.trim()) {
-    message.error('请填写平台工具编码、MCP 真实工具名和服务地址')
-    return
-  }
   saving.value = true
   try {
-    await upsertMcpTool({
-      original_mcp_code: null,
-      mcp_code: createForm.mcp_code.trim(),
-      name: createForm.name.trim(),
-      description: createForm.description?.trim() || null,
-      base_url: createForm.base_url.trim(),
-      transport: createForm.transport,
-      auth_type: null,
-      auth_config: null,
-      input_schema: parseJsonObject(createSchemaText.value, '输入参数 JSON Schema'),
-      output_schema: null,
-      status: createForm.status,
-    })
-    message.success('MCP 工具已保存')
+    await upsertMcpTool(buildToolPayload())
+    message.success('API Tool 已保存')
     createModalOpen.value = false
     await load()
+  } catch (error: any) {
+    message.error(error?.message || String(error))
   } finally {
     saving.value = false
   }
 }
 
-/** 选择工具并初始化 JSON 参数。 */
-function selectTool(tool: AgentToolInfo) {
+/** 使用未保存配置测试目标 API、请求头、认证和参数映射。 */
+async function onTestApi() {
+  testingApi.value = true
+  testApiResult.value = ''
+  try {
+    const response = await testMcpTool({
+      tool: buildToolPayload(),
+      args: parseJsonObject(testArgsText.value, 'Tool 参数 JSON'),
+      runtime_inputs: parseJsonObject(testRuntimeInputsText.value, 'Runtime inputs JSON'),
+    })
+    testApiResult.value = prettyJson(response)
+    message.success(`API 测试成功，HTTP ${response.status_code}，耗时 ${response.elapsed_ms}ms`)
+  } catch (error: any) {
+    testApiResult.value = `测试失败：${error?.message || error}`
+  } finally {
+    testingApi.value = false
+  }
+}
+
+/** 发布或停用当前 Tool，并刷新管理列表。 */
+async function changePublishStatus(enabled: boolean) {
+  if (!selectedTool.value) return
+  await publishMcpTool(selectedTool.value.name, enabled)
+  message.success(enabled ? 'Tool 已发布' : 'Tool 已停用')
+  await load()
+}
+
+/** 选择一个工具并生成调试参数模板。 */
+function selectTool(tool: McpToolView) {
   selectedTool.value = tool
   result.value = ''
   resetArgsJson()
 }
 
-/** 根据工具 Schema 生成一份可编辑的 JSON 参数模板。 */
+/** 根据自动生成的输入 Schema 构造调试参数示例。 */
 function resetArgsJson() {
-  argsJsonText.value = prettyJson(buildExampleArgs(selectedTool.value?.args_schema || {}))
+  argsJsonText.value = prettyJson(buildExampleArgs(selectedTool.value?.input_schema || {}))
   result.value = ''
 }
 
-/** 格式化当前 JSON 参数文本。 */
+/** 格式化调试参数 JSON。 */
 function formatArgsJson() {
-  try {
-    argsJsonText.value = prettyJson(parseJsonObject(argsJsonText.value, '参数 JSON') || {})
-  } catch {
-    // parseJsonObject 已经展示错误提示，这里不再重复处理。
-  }
+  argsJsonText.value = prettyJson(parseJsonObject(argsJsonText.value, '参数 JSON'))
 }
 
-/** 调试调用工具。 */
+/** 通过 Agent 调试入口执行已发布 MCP Tool。 */
 async function onRun() {
   if (!selectedTool.value) return
   running.value = true
   result.value = ''
   try {
-    const args = parseJsonObject(argsJsonText.value, '参数 JSON') || {}
-    const res = await invokeAgentTool({ tool_name: selectedTool.value.name, args })
-    result.value = prettyJson(res)
-  } catch (e: any) {
-    result.value = `调用失败：${e?.message || e}`
+    const args = parseJsonObject(argsJsonText.value, '参数 JSON')
+    const response = await invokeAgentTool({ tool_name: selectedTool.value.name, args })
+    result.value = prettyJson(response)
+  } catch (error: any) {
+    result.value = `调用失败：${error?.message || error}`
   } finally {
     running.value = false
   }
 }
 
-/** 解析 JSON 对象文本，空值返回 null。 */
-function parseJsonObject(value: string, label: string) {
-  const text = value.trim()
-  if (!text) return null
-  try {
-    const parsed = JSON.parse(text)
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new Error(`${label} 必须是 JSON 对象`)
-    }
-    return parsed
-  } catch (error: any) {
-    message.error(`${label} 格式错误：${error?.message || error}`)
-    throw error
+/** 解析并校验 JSON 对象文本。 */
+function parseJsonObject(value: string, label: string): Record<string, any> {
+  const text = value.trim() || '{}'
+  const parsed = JSON.parse(text)
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`${label} 必须是 JSON 对象`)
   }
+  return parsed
 }
 
-/** 根据 JSON Schema 构建简单参数示例，方便用户快速编辑。 */
+/** 根据 JSON Schema 的属性类型生成简单示例。 */
 function buildExampleArgs(schema: Record<string, any>) {
-  const properties = schema?.properties || {}
   const example: Record<string, unknown> = {}
-  Object.entries(properties).forEach(([name, raw]) => {
-    const item = raw as Record<string, any>
-    if (item.default !== undefined) {
-      example[name] = item.default
-      return
-    }
-    if (item.type === 'array') example[name] = []
+  Object.entries(schema?.properties || {}).forEach(([name, rawSchema]) => {
+    const item = rawSchema as Record<string, any>
+    if (item.default !== undefined) example[name] = item.default
+    else if (item.type === 'array') example[name] = []
+    else if (item.type === 'object') example[name] = {}
     else if (item.type === 'boolean') example[name] = false
     else if (item.type === 'integer' || item.type === 'number') example[name] = 0
-    else if (item.type === 'object') example[name] = {}
     else example[name] = ''
   })
   return example
 }
 
-/** 根据工具分组返回标签颜色。 */
-function toolGroupColor(group: string) {
-  if (group === 'mcp') return 'purple'
-  return 'blue'
+/** 返回工具状态的中文展示文本。 */
+function statusText(status: string) {
+  return { draft: '草稿', enabled: '已发布', disabled: '已停用' }[status] || status
 }
 
-/** 格式化 JSON。 */
+/** 返回工具状态对应的标签颜色。 */
+function statusColor(status: string) {
+  return { draft: 'orange', enabled: 'green', disabled: 'red' }[status] || 'default'
+}
+
+/** 格式化任意 JSON 数据。 */
 function prettyJson(value: unknown) {
   return JSON.stringify(value, null, 2)
-}
-
-/** 截断列表描述。 */
-function shortDescription(value: string) {
-  const firstLine = (value || '暂无说明').trim().split('\n')[0]
-  return firstLine.length > 80 ? `${firstLine.slice(0, 80)}...` : firstLine
 }
 
 onMounted(load)
 </script>
 
 <style scoped>
-.page-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 16px;
-}
-.page-title {
-  margin: 0;
-  font-size: 20px;
-  font-weight: 600;
-}
-.tool-item {
-  cursor: pointer;
-  transition: background 0.2s;
-}
-.tool-item:hover {
-  background: #f5f5f5;
-}
-.tool-item.active {
-  background: #e6f4ff;
-}
-.tool-desc {
-  color: #6b7280;
-  font-size: 12px;
-  line-height: 1.5;
-}
-.description-box {
-  max-height: 160px;
-  margin: 0;
-  white-space: pre-wrap;
-  color: #374151;
-  font-size: 12px;
-}
-.json-input textarea {
-  font-family: Consolas, Monaco, 'Courier New', monospace;
-}
-.result-box {
-  background: #1e1e1e;
-  color: #d4d4d4;
-  padding: 12px;
-  border-radius: 4px;
-  max-height: 420px;
-  overflow: auto;
-  font-size: 12px;
-  margin: 0;
-}
-.result-box.light {
-  background: #f8fafc;
-  color: #111827;
-  border: 1px solid #e5e7eb;
-}
-.mb-4 {
-  margin-bottom: 16px;
-}
-.mt-3 {
-  margin-top: 12px;
-}
+.page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+.page-title { margin: 0; font-size: 20px; font-weight: 600; }
+.tool-item { cursor: pointer; transition: background 0.2s; }
+.tool-item:hover { background: #f5f5f5; }
+.tool-item.active { background: #e6f4ff; }
+.tool-desc { color: #6b7280; font-size: 12px; line-height: 1.5; word-break: break-all; }
+.parameter-row { padding: 12px; margin-bottom: 10px; border: 1px solid #e5e7eb; border-radius: 6px; }
+.json-input textarea { font-family: Consolas, Monaco, 'Courier New', monospace; }
+.result-box { margin: 0; padding: 12px; max-height: 420px; overflow: auto; border-radius: 4px; background: #1e1e1e; color: #d4d4d4; font-size: 12px; }
+.result-box.light { background: #f8fafc; color: #111827; border: 1px solid #e5e7eb; }
+.mb-4 { margin-bottom: 16px; }
+.mt-2 { margin-top: 8px; }
+.mt-3 { margin-top: 12px; }
 </style>

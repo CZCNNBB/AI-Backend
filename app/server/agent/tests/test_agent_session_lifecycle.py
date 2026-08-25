@@ -9,10 +9,12 @@ from app.common.db.postgres_db import PostgresTransaction, get_postgres_engine
 from app.server.agent.src.agent.resume_service import AgentResumeService
 from app.server.agent.src.agent.service import AgentService
 from app.server.agent.src.context.repository import AgentContextRepository
-from app.server.agent.src.mcp.schemas import AgentMCPToolView
-from app.server.agent.src.mcp.service import MCPService
+from app.server.agent.src.mcp.service import AgentMCPRuntimeService
 from app.server.agent.src.runtime.context import AgentRuntimeContext
 from app.server.agent.src.schemas.request import AgentResumeRequest, AgentRunRequest, ModelRuntimeOptions
+from app.server.fastmcp.src.models import MCPToolRecord
+from app.server.fastmcp.src.schemas import MCPToolUpsertRequest, MCPToolView
+from app.server.fastmcp.src.service import MCPToolService
 
 
 class FakeSession:
@@ -236,29 +238,31 @@ class AgentSessionLifecycleTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_mcp_remote_discovery_uses_detached_config_snapshot(self) -> None:
         """远程 MCP 工具发现应在配置查询事务关闭后执行。"""
         sessions: list[FakeSession] = []
-        record = SimpleNamespace(mcp_code="job.search")
-        snapshot = AgentMCPToolView(
-            mcp_code="job.search",
-            name="search",
-            base_url="http://127.0.0.1:8091/mcp/",
-            transport="http",
+        record = SimpleNamespace(name="job_search")
+        snapshot = MCPToolView(
+            name="job_search",
+            api_url="http://127.0.0.1:8080/api/jobs/search",
+            http_method="POST",
+            auth_type="none",
+            timeout_seconds=30,
             status="enabled",
         )
-        loaded_tool = SimpleNamespace(name="search")
+        loaded_tool = SimpleNamespace(name="job_search")
 
-        service = MCPService(repository=MagicMock())
-        service._get_enabled_tool_records = MagicMock(return_value=[record])
-        service.to_tool_view = MagicMock(return_value=snapshot)
+        catalog_service = MCPToolService(repository=MagicMock())
+        catalog_service._get_enabled_tool_records = MagicMock(return_value=[record])
+        catalog_service.to_tool_view = MagicMock(return_value=snapshot)
+        service = AgentMCPRuntimeService(catalog_service=catalog_service)
 
-        async def load_after_config_transaction_closed(records, mcp_codes):
+        async def load_after_config_transaction_closed(records, tool_names):
             """验证访问远程 MCP 前配置查询 Session 已经关闭。"""
             self.assertEqual(records, [snapshot])
-            self.assertEqual(mcp_codes, ["job.search"])
+            self.assertEqual(tool_names, ["job_search"])
             self.assertEqual(len(sessions), 1)
             self.assertFalse(sessions[0].active)
             return [loaded_tool]
 
-        service._load_langchain_tools_from_records = AsyncMock(
+        service._load_langchain_tools_from_snapshots = AsyncMock(
             side_effect=load_after_config_transaction_closed
         )
 
@@ -267,10 +271,10 @@ class AgentSessionLifecycleTestCase(unittest.IsolatedAsyncioTestCase):
             return FakeTransaction(sessions)
 
         with patch(
-            "app.server.agent.src.mcp.service.postgres_transaction",
+            "app.server.fastmcp.src.service.postgres_transaction",
             side_effect=build_transaction,
         ):
-            tools = await service.load_runtime_langchain_tools(["job.search"])
+            tools = await service.load_runtime_langchain_tools(["job_search"])
 
         self.assertEqual(tools, [loaded_tool])
         self.assertEqual(len(sessions), 1)
@@ -347,6 +351,24 @@ class AgentSessionLifecycleTestCase(unittest.IsolatedAsyncioTestCase):
         db.flush.assert_called_once_with()
         db.refresh.assert_called_once_with(conversation)
         db.commit.assert_not_called()
+
+    def test_mcp_tool_uses_name_as_only_identity(self) -> None:
+        """MCP 工具模型和接口应只使用 name，并指向独立的 mcp Schema。"""
+        self.assertEqual(MCPToolRecord.__table__.schema, "mcp")
+        self.assertEqual(MCPToolRecord.__table__.name, "mcp_tools")
+        self.assertNotIn("mcp_code", MCPToolRecord.__table__.columns)
+        self.assertNotIn("mcp_code", MCPToolUpsertRequest.model_fields)
+        self.assertNotIn("mcp_code", MCPToolView.model_fields)
+        self.assertNotIn("base_url", MCPToolRecord.__table__.columns)
+        self.assertIn("api_url", MCPToolRecord.__table__.columns)
+        self.assertIn("parameters", MCPToolRecord.__table__.columns)
+
+        request = MCPToolUpsertRequest(
+            name=" job_search ",
+            api_url=" http://127.0.0.1:8080/api/jobs/search ",
+        )
+        self.assertEqual(request.name, "job_search")
+        self.assertEqual(request.api_url, "http://127.0.0.1:8080/api/jobs/search")
 
 
 if __name__ == "__main__":

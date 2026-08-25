@@ -196,41 +196,46 @@ COMMENT ON COLUMN agent.agent_runs.status IS '运行状态，例如 running、su
 COMMENT ON COLUMN agent.agent_runs.elapsed_ms IS '运行耗时，单位毫秒。';
 COMMENT ON COLUMN agent.agent_runs.metadata IS '运行扩展元数据。';
 
-CREATE TABLE IF NOT EXISTS agent.agent_mcp_tools (
+CREATE SCHEMA IF NOT EXISTS mcp;
+
+CREATE TABLE IF NOT EXISTS mcp.mcp_tools (
     id BIGSERIAL PRIMARY KEY,
-    mcp_code VARCHAR(150) NOT NULL UNIQUE,
-    name VARCHAR(255) NOT NULL,
+    name VARCHAR(150) NOT NULL UNIQUE,
     description TEXT,
-    base_url TEXT NOT NULL,
-    transport VARCHAR(50) NOT NULL DEFAULT 'http',
-    auth_type VARCHAR(50),
-    auth_config JSONB,
-    input_schema JSONB,
+    api_url TEXT NOT NULL,
+    http_method VARCHAR(10) NOT NULL DEFAULT 'POST',
+    static_headers JSONB NOT NULL DEFAULT '{}'::jsonb,
+    parameters JSONB NOT NULL DEFAULT '[]'::jsonb,
+    auth_type VARCHAR(50) NOT NULL DEFAULT 'none',
+    auth_config JSONB NOT NULL DEFAULT '{}'::jsonb,
+    input_schema JSONB NOT NULL DEFAULT '{"type":"object","properties":{},"additionalProperties":false}'::jsonb,
     output_schema JSONB,
-    status VARCHAR(30) NOT NULL DEFAULT 'enabled',
+    timeout_seconds DOUBLE PRECISION NOT NULL DEFAULT 30,
+    status VARCHAR(30) NOT NULL DEFAULT 'draft',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT ck_mcp_tools_http_method CHECK (http_method IN ('GET', 'POST', 'PUT', 'PATCH', 'DELETE')),
+    CONSTRAINT ck_mcp_tools_auth_type CHECK (auth_type IN ('none', 'bearer', 'basic', 'api_key')),
+    CONSTRAINT ck_mcp_tools_status CHECK (status IN ('draft', 'enabled', 'disabled')),
+    CONSTRAINT ck_mcp_tools_timeout CHECK (timeout_seconds > 0 AND timeout_seconds <= 600)
 );
 
-CREATE INDEX IF NOT EXISTS idx_agent_mcp_tools_name
-ON agent.agent_mcp_tools(name);
+CREATE INDEX IF NOT EXISTS idx_mcp_tools_api_url
+ON mcp.mcp_tools(api_url);
 
-CREATE INDEX IF NOT EXISTS idx_agent_mcp_tools_base_url
-ON agent.agent_mcp_tools(base_url);
+CREATE INDEX IF NOT EXISTS idx_mcp_tools_status
+ON mcp.mcp_tools(status);
 
-CREATE INDEX IF NOT EXISTS idx_agent_mcp_tools_status
-ON agent.agent_mcp_tools(status);
+CREATE INDEX IF NOT EXISTS idx_mcp_tools_updated_at
+ON mcp.mcp_tools(updated_at);
 
-CREATE INDEX IF NOT EXISTS idx_agent_mcp_tools_updated_at
-ON agent.agent_mcp_tools(updated_at);
-
-COMMENT ON TABLE agent.agent_mcp_tools IS 'Agent MCP 工具配置表：一条记录代表一个可被 Agent 选择的 MCP 工具。';
-COMMENT ON COLUMN agent.agent_mcp_tools.mcp_code IS '平台内 MCP 工具唯一编码。';
-COMMENT ON COLUMN agent.agent_mcp_tools.name IS 'MCP 服务中的真实工具名称。';
-COMMENT ON COLUMN agent.agent_mcp_tools.base_url IS 'MCP 服务访问地址。';
-COMMENT ON COLUMN agent.agent_mcp_tools.auth_config IS 'MCP 服务认证配置。';
-COMMENT ON COLUMN agent.agent_mcp_tools.input_schema IS '工具输入参数 JSON Schema。';
-COMMENT ON COLUMN agent.agent_mcp_tools.output_schema IS '工具输出参数 JSON Schema。';
+COMMENT ON TABLE mcp.mcp_tools IS '普通 HTTP API 转换型 MCP Tool 配置表。';
+COMMENT ON COLUMN mcp.mcp_tools.name IS '全局唯一的 MCP 真实工具名，Agent 模板直接引用该名称。';
+COMMENT ON COLUMN mcp.mcp_tools.api_url IS '目标业务 HTTP API 地址。';
+COMMENT ON COLUMN mcp.mcp_tools.parameters IS 'Tool/runtime/static 参数的 HTTP 位置映射。';
+COMMENT ON COLUMN mcp.mcp_tools.auth_config IS '目标 API 认证配置。';
+COMMENT ON COLUMN mcp.mcp_tools.input_schema IS '平台自动生成的 MCP Tool 输入 JSON Schema。';
+COMMENT ON COLUMN mcp.mcp_tools.output_schema IS '工具输出参数 JSON Schema。';
 
 -- =====================================================================
 -- 4. 文件服务

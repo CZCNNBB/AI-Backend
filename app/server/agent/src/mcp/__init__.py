@@ -1,4 +1,3 @@
-from app.server.agent.src.mcp.models import AgentMCPToolRecord
-from app.server.agent.src.mcp.service import MCPService
+from app.server.agent.src.mcp.service import AgentMCPRuntimeService
 
-__all__ = ["AgentMCPToolRecord", "MCPService"]
+__all__ = ["AgentMCPRuntimeService"]

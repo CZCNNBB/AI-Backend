@@ -5,7 +5,7 @@ from typing import Any
 from sqlmodel import Session
 
 from app.common.core.exceptions import BusinessException
-from app.server.agent.src.mcp import MCPService
+from app.server.agent.src.mcp import AgentMCPRuntimeService
 from app.server.agent.src.tools.a2a_tool import a2a_call
 from app.server.agent.src.tools.base import AgentToolDefinition
 from app.server.agent.src.tools.file_tools import read_uploaded_file
@@ -20,15 +20,19 @@ logger = logging.getLogger("ai_backend.agent.tools")
 class AgentToolService:
     """Agent 工具服务，负责系统内置能力工具、MCP 外接工具和工具调试调用。"""
 
-    def __init__(self, registry: AgentToolRegistry | None = None, mcp_service: MCPService | None = None):
+    def __init__(
+        self,
+        registry: AgentToolRegistry | None = None,
+        mcp_runtime_service: AgentMCPRuntimeService | None = None,
+    ):
         """初始化 Agent 工具服务。
 
         Args:
             registry: 可选工具注册表；不传时使用默认注册表。
-            mcp_service: MCP 工具服务；不传时使用默认服务。
+            mcp_runtime_service: Agent MCP 运行时适配服务；不传时使用默认实现。
         """
         self.registry = registry or AgentToolRegistry()
-        self.mcp_service = mcp_service or MCPService()
+        self.mcp_runtime_service = mcp_runtime_service or AgentMCPRuntimeService()
         if registry is None:
             self._register_builtin_tools()
 
@@ -165,7 +169,7 @@ class AgentToolService:
             include_dynamic: 是否包含 A2A 这类动态工具。
 
         Returns:
-            工具元数据列表。MCP 外部工具请通过 /agent/mcp/search 查询。
+            工具元数据列表。MCP 外部工具请通过 /fastmcp/tools/search 查询。
         """
         items = [self._to_tool_info(definition) for definition in self.registry.list_definitions()]
         if include_dynamic:
@@ -176,7 +180,7 @@ class AgentToolService:
         """解析模板配置中的 MCP 外接工具。
 
         Args:
-            tool_names: 模板 tools 白名单。该字段只允许填写 MCP 工具编码；None 或空列表表示不加载外接工具。
+            tool_names: 模板 tools 白名单。该字段只允许填写 MCP 真实工具名；None 或空列表表示不加载外接工具。
 
         Returns:
             可传给 LangChain create_agent 的 MCP 工具对象列表。
@@ -198,16 +202,16 @@ class AgentToolService:
             )
 
         # 去重但保留用户配置顺序，便于日志排查。
-        mcp_tool_codes = list(dict.fromkeys(cleaned_names))
+        mcp_tool_names = list(dict.fromkeys(cleaned_names))
         # MCP 配置查询和远程工具发现必须分成两个阶段：先在短事务中复制配置快照并关闭 Session，
         # 再访问远程 MCP 服务，避免网络等待长期占用业务数据库连接。
-        return await self.mcp_service.load_runtime_langchain_tools(mcp_tool_codes)
+        return await self.mcp_runtime_service.load_runtime_langchain_tools(mcp_tool_names)
 
     async def invoke_tool(self, tool_name: str, args: dict[str, Any], db: Session | None = None) -> Any:
         """从工具管理页测试调用一个工具。
 
         Args:
-            tool_name: 工具名称或 MCP 工具编码。
+            tool_name: 内置工具名或 MCP 真实工具名。
             args: 工具调用参数。
             db: 数据库会话；调试调用 MCP 工具时必须传入。
 
@@ -239,7 +243,9 @@ class AgentToolService:
             if db is None:
                 raise BusinessException(code=404, msg=f"工具不存在或未注册: {cleaned_name}")
             try:
-                mcp_tools = await self.mcp_service.load_langchain_tools(db, [cleaned_name])
+                # Agent Runtime 会自行使用短事务读取 MCP Platform 工具快照；这里传入的
+                # 请求级 Session 不参与远程 MCP 调用，避免调试连接期间占用数据库连接。
+                mcp_tools = await self.mcp_runtime_service.load_runtime_langchain_tools([cleaned_name])
             except RuntimeError as error:
                 raise BusinessException(code=404, msg=str(error)) from error
             if not mcp_tools:

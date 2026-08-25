@@ -7,7 +7,7 @@
   <div>
     <h2 class="page-title">🔗 A2A 拓扑图</h2>
 
-    <a-card>
+    <a-card :loading="loading">
       <template #title>
         <a-space>
           <span>Agent 调用关系</span>
@@ -17,7 +17,7 @@
         </a-space>
       </template>
       <template #extra>
-        <a-button type="primary" @click="loadAll">🔄 刷新</a-button>
+        <a-button type="primary" :loading="loading" @click="loadAll">🔄 刷新</a-button>
       </template>
 
       <a-empty v-if="!agents.length" description="暂无 Agent 数据" />
@@ -76,10 +76,10 @@
             </a-tag>
           </template>
           <template v-else-if="column.dataIndex === 'sub_agent_list'">
-            <a-tag v-for="s in record.config?.sub_agent_list || []" :key="s" color="cyan" class="m-1">
+            <a-tag v-for="s in record.config?.a2a?.sub_agent_list || []" :key="s" color="cyan" class="m-1">
               {{ s }}
             </a-tag>
-            <span v-if="!(record.config?.sub_agent_list || []).length">-</span>
+            <span v-if="!(record.config?.a2a?.sub_agent_list || []).length">-</span>
           </template>
           <template v-else-if="column.dataIndex === 'action'">
             <a-button type="link" size="small" @click="router.push(`/agents/${record.agent_id}/edit`)">
@@ -99,6 +99,7 @@
  * - 简单环形布局绘制节点和边
  */
 import { computed, onMounted, ref } from 'vue'
+import { message } from 'ant-design-vue'
 import { useRouter } from 'vue-router'
 import { searchAgentTemplates, type AgentTemplate } from '@/api/agentTemplate'
 
@@ -106,6 +107,10 @@ defineOptions({ name: 'A2AVisualizerView' })
 
 const router = useRouter()
 const agents = ref<AgentTemplate[]>([])
+const loading = ref(false)
+
+// 后端 AgentTemplateSearchRequest 对单页数量的上限是 100。
+const AGENT_PAGE_SIZE = 100
 
 const canvasSize = ref({ w: 1000, h: 600 })
 
@@ -117,23 +122,55 @@ const columns = [
   { title: '操作', dataIndex: 'action', width: 100 },
 ]
 
-/** 加载所有 Agent */
+/** 分页加载全部 active Agent，避免请求超过后端 page_size 上限。 */
 async function loadAll() {
-  const res = await searchAgentTemplates({ status: 'active', page: 1, page_size: 200 })
-  agents.value = res.items
-  // 自适应画布
-  canvasSize.value = { w: Math.max(1000, agents.value.length * 120), h: Math.max(500, agents.value.length * 80) }
+  loading.value = true
+  try {
+    const loadedAgents: AgentTemplate[] = []
+    let currentPage = 1
+
+    while (true) {
+      const response = await searchAgentTemplates({
+        status: 'active',
+        page: currentPage,
+        page_size: AGENT_PAGE_SIZE,
+      })
+      loadedAgents.push(...response.items)
+
+      // 已达到后端返回的总数，或当前页不足一整页时，说明所有数据已经加载完成。
+      const allAgentsLoaded = loadedAgents.length >= response.total
+      const isLastPartialPage = response.items.length < AGENT_PAGE_SIZE
+      if (allAgentsLoaded || isLastPartialPage) break
+      currentPage += 1
+    }
+
+    agents.value = loadedAgents
+    // 根据完整 Agent 数量调整画布，避免节点在数量较多时重叠。
+    canvasSize.value = {
+      w: Math.max(1000, agents.value.length * 120),
+      h: Math.max(500, agents.value.length * 80),
+    }
+  } catch (error: any) {
+    // mounted 和手动刷新共用该方法，必须在内部消费异常，避免 Vue 报 Unhandled Promise。
+    message.error(`加载 A2A 拓扑失败：${error?.message || error}`)
+  } finally {
+    loading.value = false
+  }
 }
 
 /** 主 Agent */
 const mainAgents = computed(() => agents.value.filter((a) => !a.config?.is_sub_agent))
 /** 子 Agent */
 const subAgents = computed(() => agents.value.filter((a) => a.config?.is_sub_agent))
-/** 边（A2A 拓扑需要从 Run Chain 中聚合；这里先展示 sub_agent 节点） */
+/** 根据 Agent 模板的 a2a.sub_agent_list 生成主 Agent 到子 Agent 的配置关系边。 */
 const edges = computed(() => {
   const out: { from: string; to: string }[] = []
-  // 后端 AgentTemplateConfig 没有 sub_agent_list 字段，
-  // 真正的 A2A 调用关系需要从 AgentRunChain 中聚合，TODO
+  agents.value.forEach((agent) => {
+    const subAgentIds = agent.config?.a2a?.sub_agent_list || []
+    subAgentIds.forEach((subAgentId) => {
+      out.push({ from: agent.agent_id, to: subAgentId })
+    })
+  })
   return out
 })
 
