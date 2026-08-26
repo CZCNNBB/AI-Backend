@@ -198,15 +198,13 @@ mcp.mcp_tools
       "required": true
     },
     {
-      "name": "keyword",
-      "target": "filters.keyword",
+      "name": "filters.keyword",
       "location": "body",
       "source": "tool",
       "data_type": "string"
     },
     {
-      "name": "tenant_id",
-      "target": "X-Tenant-Id",
+      "name": "X-Tenant-Id",
       "location": "header",
       "source": "runtime",
       "runtime_path": "tenant_id"
@@ -227,7 +225,7 @@ mcp.mcp_tools
 - `runtime`：从 Agent 可信 `inputs` 读取，不出现在 Tool Schema 中。
 - `static`：使用平台配置的固定值，不出现在 Tool Schema 中。
 
-参数位置支持 `path`、`query`、`header` 和 `body`。`body` 的 `target` 支持点分路径，例如 `filters.keyword` 会生成嵌套 JSON。
+`name` 直接填写目标 API 的参数字段名，同时作为 Agent 可见的 MCP Tool 参数名，不再维护额外字段别名。参数位置支持 `path`、`query`、`header` 和 `body`；body 参数名支持点分路径，例如 `filters.keyword` 会生成嵌套 JSON。
 
 认证由平台独立注入，目前支持 `none`、`bearer`、`basic` 和 `api_key`。Token、密码和 API Key 不会成为模型参数。
 

@@ -134,16 +134,16 @@
           class="mb-4"
           type="info"
           show-icon
-          message="tool 由 Agent 填写；runtime 从 Agent inputs 注入；static 使用固定值。"
+          message="Agent 参数由模型填写；Runtime inputs 从请求上下文注入；固定值会按所选类型自动解析。"
+          description='固定字符串直接填 high（不加引号）；object 填 {"type":"enabled"}；array 填 ["a","b"]；boolean 填 true 或 false。'
         />
         <div v-for="(parameter, index) in createForm.parameters" :key="index" class="parameter-row">
           <a-row :gutter="8" align="middle">
-            <a-col :span="4"><a-input v-model:value="parameter.name" placeholder="Tool 参数名" /></a-col>
-            <a-col :span="4"><a-input v-model:value="parameter.target" placeholder="API 目标字段" /></a-col>
+            <a-col :span="6"><a-input v-model:value="parameter.name" placeholder="API 参数字段名" /></a-col>
             <a-col :span="3"><a-select v-model:value="parameter.source" :options="sourceOptions" /></a-col>
             <a-col :span="3"><a-select v-model:value="parameter.location" :options="locationOptions" /></a-col>
             <a-col :span="3"><a-select v-model:value="parameter.data_type" :options="parameterTypeOptions" /></a-col>
-            <a-col :span="4">
+            <a-col :span="6">
               <a-input
                 v-if="parameter.source === 'runtime'"
                 v-model:value="parameter.runtime_path"
@@ -152,7 +152,7 @@
               <a-input
                 v-else-if="parameter.source === 'static'"
                 v-model:value="parameter.value"
-                placeholder="固定值"
+                :placeholder="staticValuePlaceholder(parameter.data_type)"
               />
               <a-switch
                 v-else
@@ -304,7 +304,6 @@ function openCreateModal() {
 function addParameter() {
   createForm.parameters.push({
     name: '',
-    target: '',
     source: 'tool',
     location: 'body',
     data_type: 'string',
@@ -328,9 +327,11 @@ function buildToolPayload(): McpToolUpsertRequest {
     .map((parameter) => ({
       ...parameter,
       name: parameter.name.trim(),
-      target: parameter.target?.trim() || parameter.name.trim(),
       description: parameter.description?.trim() || null,
       runtime_path: parameter.runtime_path?.trim() || null,
+      value: parameter.source === 'static'
+        ? parseStaticValue(parameter.value, parameter.data_type, parameter.name)
+        : parameter.value,
     }))
   return {
     ...createForm,
@@ -341,6 +342,68 @@ function buildToolPayload(): McpToolUpsertRequest {
     auth_config: parseJsonObject(authConfigText.value, '认证配置 JSON'),
     parameters: normalizedParameters,
   }
+}
+
+/** 根据固定值类型返回无需二次猜测的填写示例。 */
+function staticValuePlaceholder(dataType: McpToolParameter['data_type']) {
+  const placeholders: Record<McpToolParameter['data_type'], string> = {
+    string: '例如 high（不加引号）',
+    integer: '例如 1',
+    number: '例如 0.7',
+    boolean: 'true 或 false',
+    object: '例如 {"type":"enabled"}',
+    array: '例如 ["a","b"]',
+  }
+  return placeholders[dataType]
+}
+
+/** 按用户选择的数据类型解析固定值，避免对象或布尔值被错误发送为字符串。 */
+function parseStaticValue(
+  rawValue: any,
+  dataType: McpToolParameter['data_type'],
+  parameterName: string,
+): any {
+  if (dataType === 'string') {
+    // 字符串采用直接输入规则：high 就表示 "high"，用户不需要额外添加 JSON 引号。
+    return String(rawValue ?? '')
+  }
+
+  const normalizedText = String(rawValue ?? '').trim()
+  if (!normalizedText) {
+    throw new Error(`固定参数 ${parameterName} 不能为空`)
+  }
+
+  if (dataType === 'boolean') {
+    if (normalizedText === 'true') return true
+    if (normalizedText === 'false') return false
+    throw new Error(`固定参数 ${parameterName} 必须填写 true 或 false`)
+  }
+
+  if (dataType === 'integer' || dataType === 'number') {
+    const numberValue = Number(normalizedText)
+    if (!Number.isFinite(numberValue)) {
+      throw new Error(`固定参数 ${parameterName} 必须是有效数字`)
+    }
+    if (dataType === 'integer' && !Number.isInteger(numberValue)) {
+      throw new Error(`固定参数 ${parameterName} 必须是整数`)
+    }
+    return numberValue
+  }
+
+  let jsonValue: any
+  try {
+    jsonValue = JSON.parse(normalizedText)
+  } catch (error: any) {
+    throw new Error(`固定参数 ${parameterName} 的 JSON 格式错误：${error?.message || error}`)
+  }
+
+  if (dataType === 'object' && (!jsonValue || typeof jsonValue !== 'object' || Array.isArray(jsonValue))) {
+    throw new Error(`固定参数 ${parameterName} 必须是 JSON 对象`)
+  }
+  if (dataType === 'array' && !Array.isArray(jsonValue)) {
+    throw new Error(`固定参数 ${parameterName} 必须是 JSON 数组`)
+  }
+  return jsonValue
 }
 
 /** 保存 API Tool 配置；enabled 状态会立即热发布到 /mcp。 */

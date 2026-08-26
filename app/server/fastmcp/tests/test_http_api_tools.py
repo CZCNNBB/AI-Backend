@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 from fastmcp import Client, FastMCP
+from pydantic import ValidationError
 
 from app.server.fastmcp.src.executor import HTTPAPIToolExecutor, HTTPToolExecutionResult
 from app.server.fastmcp.src.registry import FastMCPToolRegistry
@@ -25,14 +26,13 @@ class HTTPAPIToolExecutorTestCase(unittest.IsolatedAsyncioTestCase):
                 {"name": "job_id", "location": "path", "source": "tool", "required": True},
                 {"name": "page", "location": "query", "source": "tool", "data_type": "integer", "default": 1},
                 {
-                    "name": "tenant_id",
-                    "target": "X-Tenant-Id",
+                    "name": "X-Tenant-Id",
                     "location": "header",
                     "source": "runtime",
                     "runtime_path": "tenant.id",
                     "required": True,
                 },
-                {"name": "keyword", "target": "filters.keyword", "location": "body", "source": "tool"},
+                {"name": "filters.keyword", "location": "body", "source": "tool"},
                 {"name": "channel", "location": "body", "source": "static", "value": "agent"},
             ],
         )
@@ -54,7 +54,7 @@ class HTTPAPIToolExecutorTestCase(unittest.IsolatedAsyncioTestCase):
         with patch.object(httpx.AsyncClient, "request", new=capture_request):
             result = await HTTPAPIToolExecutor().execute(
                 tool_view,
-                {"job_id": "job/001", "keyword": "Python"},
+                {"job_id": "job/001", "filters.keyword": "Python"},
                 runtime_inputs={"tenant": {"id": "tenant-1"}},
             )
 
@@ -82,6 +82,46 @@ class HTTPAPIToolExecutorTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(list(input_schema["properties"]), ["keyword"])
         self.assertEqual(input_schema["required"], ["keyword"])
+
+    async def test_static_parameter_value_must_match_declared_type(self) -> None:
+        """object、boolean 等固定值不能以看似 JSON 的普通字符串混入请求。"""
+        valid_request = MCPToolUpsertRequest(
+            name="deepseek_test",
+            api_url="http://business.test/chat/completions",
+            parameters=[
+                {
+                    "name": "thinking",
+                    "location": "body",
+                    "source": "static",
+                    "data_type": "object",
+                    "value": {"type": "enabled"},
+                },
+                {
+                    "name": "stream",
+                    "location": "body",
+                    "source": "static",
+                    "data_type": "boolean",
+                    "value": False,
+                },
+            ],
+        )
+        self.assertEqual(valid_request.parameters[0].value, {"type": "enabled"})
+        self.assertIs(valid_request.parameters[1].value, False)
+
+        with self.assertRaises(ValidationError):
+            MCPToolUpsertRequest(
+                name="invalid_static_object",
+                api_url="http://business.test/chat/completions",
+                parameters=[
+                    {
+                        "name": "thinking",
+                        "location": "body",
+                        "source": "static",
+                        "data_type": "object",
+                        "value": '{"type":"enabled"}',
+                    }
+                ],
+            )
 
 
 class FastMCPToolRegistryTestCase(unittest.IsolatedAsyncioTestCase):

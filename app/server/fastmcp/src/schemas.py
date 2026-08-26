@@ -12,10 +12,9 @@ RecordStatus = Literal["draft", "enabled", "disabled"]
 
 
 class MCPToolParameter(BaseModel):
-    """描述一个 MCP 参数如何映射到目标 HTTP API。"""
+    """描述一个目标 HTTP API 参数的来源、位置和类型。"""
 
-    name: str = Field(..., min_length=1, max_length=150, description="MCP Tool 参数名")
-    target: str | None = Field(default=None, description="目标 API 参数名；不填时与 name 相同")
+    name: str = Field(..., min_length=1, max_length=150, description="目标 API 参数名，同时作为 MCP Tool 参数名")
     location: ParameterLocation = Field(..., description="参数进入 path、query、header 或 JSON body")
     source: ParameterSource = Field(default="tool", description="参数来自模型、运行时上下文或固定值")
     data_type: ParameterType = Field(default="string", description="参数 JSON 类型")
@@ -26,7 +25,7 @@ class MCPToolParameter(BaseModel):
     runtime_path: str | None = Field(default=None, description="source=runtime 时从 inputs 读取的点分路径")
     item_schema: dict[str, Any] | None = Field(default=None, description="object/array 参数的补充 JSON Schema")
 
-    @field_validator("name", "target", "runtime_path", "description")
+    @field_validator("name", "runtime_path", "description")
     @classmethod
     def normalize_text(cls, value: str | None) -> str | None:
         """清理参数配置中的文本，并把空字符串统一转换为空值。"""
@@ -36,15 +35,36 @@ class MCPToolParameter(BaseModel):
         return stripped or None
 
     @model_validator(mode="after")
-    def fill_mapping_defaults(self) -> "MCPToolParameter":
-        """补齐目标字段和运行时路径，并校验来源相关配置。"""
-        self.target = self.target or self.name
+    def fill_runtime_defaults(self) -> "MCPToolParameter":
+        """补齐运行时路径，并校验固定值的数据类型。"""
         if self.source == "runtime":
             self.runtime_path = self.runtime_path or self.name
         if self.location == "path" and self.source == "tool":
             # URL path 参数无法安全省略，因此对模型暴露时必须视为必填。
             self.required = True
+        if self.source == "static":
+            self._validate_static_value_type()
         return self
+
+    def _validate_static_value_type(self) -> None:
+        """确保管理 API 直接提交的固定值也与声明类型一致。"""
+        value = self.value
+        valid_type = True
+        if self.data_type == "string":
+            valid_type = isinstance(value, str)
+        elif self.data_type == "integer":
+            valid_type = isinstance(value, int) and not isinstance(value, bool)
+        elif self.data_type == "number":
+            valid_type = isinstance(value, (int, float)) and not isinstance(value, bool)
+        elif self.data_type == "boolean":
+            valid_type = isinstance(value, bool)
+        elif self.data_type == "object":
+            valid_type = isinstance(value, dict)
+        elif self.data_type == "array":
+            valid_type = isinstance(value, list)
+
+        if not valid_type:
+            raise ValueError(f"固定参数 {self.name} 的值与声明类型 {self.data_type} 不一致")
 
 
 class MCPToolUpsertRequest(BaseModel):

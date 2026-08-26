@@ -54,15 +54,14 @@ class HTTPAPIToolExecutor:
             if not has_value:
                 continue
 
-            target_name = parameter.target or parameter.name
             if parameter.location == "path":
-                request_url = self._replace_path_parameter(request_url, target_name, parameter_value)
+                request_url = self._replace_path_parameter(request_url, parameter.name, parameter_value)
             elif parameter.location == "query":
-                query_params[target_name] = parameter_value
+                query_params[parameter.name] = parameter_value
             elif parameter.location == "header":
-                request_headers[target_name] = self._stringify_header_value(parameter_value)
+                request_headers[parameter.name] = self._stringify_header_value(parameter_value)
             elif parameter.location == "body":
-                self._set_nested_value(json_body, target_name, parameter_value)
+                self._set_nested_value(json_body, parameter.name, parameter_value)
 
         self._apply_authentication(tool, request_headers, query_params)
 

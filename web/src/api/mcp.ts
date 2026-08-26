@@ -11,7 +11,6 @@ export type McpParameterType = 'string' | 'integer' | 'number' | 'boolean' | 'ob
 /** 单个 API 参数映射。 */
 export interface McpToolParameter {
   name: string
-  target?: string | null
   location: McpParameterLocation
   source: McpParameterSource
   data_type: McpParameterType
