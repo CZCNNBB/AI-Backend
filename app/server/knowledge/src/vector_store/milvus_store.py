@@ -174,7 +174,7 @@ class MilvusVectorStoreService:
         if not client.has_collection(collection_name=collection_name, timeout=settings.milvus_connect_timeout):
             return False
         client.drop_collection(collection_name=collection_name, timeout=settings.milvus_write_timeout)
-        logger.info("Milvus collection 已删除：collection=%s", collection_name)
+        logger.info("Milvus Collection 删除完成: collection=%s", collection_name)
         return True
 
     def _insert_many_sync(
@@ -276,7 +276,7 @@ class MilvusVectorStoreService:
             if client.has_collection(collection_name=collection_name, timeout=settings.milvus_connect_timeout):
                 return
             raise
-        logger.info("Milvus collection created: collection=%s dimension=%s", collection_name, dimension)
+        logger.info("Milvus Collection 创建完成: collection=%s dimension=%s", collection_name, dimension)
 
     @staticmethod
     def _validate_record(

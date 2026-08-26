@@ -84,6 +84,7 @@ class IngestionWorkerManager:
 
     async def _execute_claimed_run(self, worker_id: str, run: IngestionRun) -> None:
         """执行已抢占任务，并在执行期间独立维持数据库心跳。"""
+        started_at = asyncio.get_running_loop().time()
         logger.info(
             "知识入库任务开始: run_id=%s worker_id=%s knowledge_id=%s file_id=%s operation=%s",
             run.run_id,
@@ -96,9 +97,20 @@ class IngestionWorkerManager:
         try:
             await ingestion_executor.execute(run)
             await asyncio.to_thread(ingestion_queue_service.mark_completed, run.run_id, worker_id)
-            logger.info("知识入库任务完成: run_id=%s worker_id=%s", run.run_id, worker_id)
+            logger.info(
+                "知识入库任务完成: run_id=%s worker_id=%s elapsed_seconds=%.3f",
+                run.run_id,
+                worker_id,
+                asyncio.get_running_loop().time() - started_at,
+            )
         except asyncio.CancelledError:
             # 进程关闭时保留 running 状态，其他实例或下次启动会通过心跳超时恢复任务。
+            logger.warning(
+                "知识入库任务因 Worker 停止而中断: run_id=%s worker_id=%s elapsed_seconds=%.3f",
+                run.run_id,
+                worker_id,
+                asyncio.get_running_loop().time() - started_at,
+            )
             raise
         except Exception as exc:  # noqa: BLE001
             final_status = await asyncio.to_thread(
@@ -109,10 +121,11 @@ class IngestionWorkerManager:
                 knowledge_config.ingestion_retry_delay_seconds,
             )
             logger.exception(
-                "知识入库任务失败: run_id=%s worker_id=%s next_status=%s",
+                "知识入库任务失败: run_id=%s worker_id=%s next_status=%s elapsed_seconds=%.3f",
                 run.run_id,
                 worker_id,
                 final_status,
+                asyncio.get_running_loop().time() - started_at,
             )
         finally:
             heartbeat_task.cancel()

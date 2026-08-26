@@ -15,6 +15,8 @@
 ```text
 用户上传原文件
   -> 保存原文件与文件记录
+  -> 立即返回 file_id，记录保持 conversion_status=pending
+后续业务场景根据 file_id 显式构建内容源
   -> 判断是否需要转换为 Markdown
      -> 不需要：原文件作为可读源
      -> 需要：生成 content.md 作为可读源
@@ -187,7 +189,7 @@ Outline 是附件的内容地图，用于帮助 Agent 决定要读取哪个范�
 当前版本已实现以下内容：
 
 - 上传文件按 `data/uploads/{file_id}/original.xxx` 保存。
-- PDF 首次被文件服务使用时，通过 `pymupdf4llm` 懒转换为同目录 `content.md`。
+- PDF 在内容源构建阶段优先通过 MinerU 转换；MinerU 健康检查失败时，使用 `pymupdf4llm` 回退，并统一写入同目录 `content.md`。
 - 纯文本、代码、结构化文本不转换，原文件直接作为内容源。
 - 图片不转换，也不会伪造文本内容。
 - 内容源会抽取标准 Markdown 标题 Outline；无标题时保存前 5 行非空预览。
@@ -198,24 +200,29 @@ Outline 是附件的内容地图，用于帮助 Agent 决定要读取哪个范�
 当前未实现 Word、Excel、PowerPoint 转换和图片视觉识别，后续可在现有内容源构建流程中扩展。
 
 
-## 12. OCR 预留设计
+## 12. MinerU OCR 设计
 
-当前版本没有启用 OCR。
+当前版本已经接入本地 MinerU 异步任务 API。
 
-- PDF 使用 `pymupdf4llm.to_markdown(..., use_ocr=False)`，不会隐式调用本地 OCR。
-- 图片不会转换为文本，Outline 会标记 `ocr_status=not_enabled`。
-- 扫描型 PDF 未提取到文本时，会明确提示 OCR 尚未启用。
-- [ocr_service.py](../src/ocr/ocr_service.py) 是未来 MinerU 的唯一接入位置。
-- 后续 MinerU 接入只需要实现 `OcrService.is_available()` 和 `OcrService.recognize_to_markdown()`，解析器、Agent 工具和数据库结构不需要感知具体提供方。
+- 每次开始解析 PDF 时，先调用 MinerU `GET /health` 检查服务状态。
+- 健康状态为 `healthy` 时，使用 `POST /tasks` 提交单文件解析任务，并轮询 `GET /tasks/{task_id}`。
+- 任务状态为 `completed` 后，通过 `GET /tasks/{task_id}/result` 提取 `results.*.md_content`。
+- MinerU 健康检查失败时，回退到 `pymupdf4llm.to_markdown(..., use_ocr=False)`。
+- MinerU 健康检查成功后，如果任务失败或超时，会明确记录转换失败，不静默切换解析器。
+- 服务地址、健康检查超时、请求超时、任务超时和轮询间隔均通过 `MINERU_*` 环境变量配置。
+- 图片仍不会转换为文本，Outline 会标记 `ocr_status=not_enabled`；当前 MinerU 仅接入 PDF 内容源构建流程。
+- [ocr_service.py](../src/ocr/ocr_service.py) 统一封装 MinerU 协议，解析器、Agent 工具和知识库入库流程不感知具体 HTTP 调用细节。
 
 
-## 13. 同步转换与懒加载 Outline
+## 13. 纯上传与显式内容源构建
 
-文件上传接口负责保存原文件，并在同一个 HTTP 请求内完成内容源构建。
+文件上传和内容解析是两个独立职责。
 
-- POST /file/upload 在返回 file_id 前同步生成 content.md 或确认原文件可直接读取。
-- PDF 转 Markdown 通过 asyncio.to_thread 放在线程池执行，事件循环不会被阻塞，但转换仍属于上传请求。
+- `POST /file/upload` 只保存原文件和数据库记录，并返回 `file_ids`；不会调用 MinerU 或其他解析器。
+- 知识库在 `POST /knowledge/documents/submit` 创建任务后，由后台 Worker 根据 `file_id` 构建内容源。
+- Agent 附件场景在上传成功后显式调用 `POST /file/parse`，确认内容源就绪后再把 `file_id` 传入 Agent。
+- PDF 内容源构建优先调用 MinerU；健康检查失败时回退 `pymupdf4llm`。
 - 上传接口限制单次最多 10 个文件、单文件最大 50MB、单次总大小最大 100MB。
 - FileContextMiddleware 在本次 Agent Run 的首次模型调用时，从内容源临时抽取 Outline 或前 5 行预览。
 - 中间件会缓存本次运行的附件地图，后续工具调用后的模型轮次复用同一份 Outline。
-- Outline 不写入 PostgreSQL；POST /file/parse 仅作为人工重试和调试入口。
+- Outline 不写入 PostgreSQL；`POST /file/parse` 同时供显式业务处理、人工重试和调试使用。

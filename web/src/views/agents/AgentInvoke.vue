@@ -398,7 +398,7 @@ import {
 } from '@/api/agentTemplate'
 import { runAgentStream } from '@/api/agentRun'
 import { searchKnowledgeBases } from '@/api/knowledge'
-import { deleteAgentFiles, uploadAgentFiles, type UploadedFileView } from '@/api/file'
+import { deleteAgentFiles, parseUploadedFile, uploadFiles, type UploadedFileView } from '@/api/file'
 import MarkdownView from '@/components/MarkdownView.vue'
 
 defineOptions({ name: 'AgentInvokeView' })
@@ -564,12 +564,34 @@ async function onFilesSelected(event: Event) {
   if (!files.length) return
 
   uploadingFiles.value = true
+  let uploadedFileIds: string[] = []
   try {
-    const result = await uploadAgentFiles(files)
-    uploadedFiles.value.push(...(result.files || []))
-    message.success(`已上传 ${result.files?.length || 0} 个附件`)
+    const uploadResult = await uploadFiles(files)
+    uploadedFileIds = uploadResult.file_ids
+
+    // 上传接口只负责保存原文件。Agent 需要立即读取附件，因此在当前业务场景中
+    // 根据 file_id 显式调用解析接口，不能把解析职责重新塞回 /file/upload。
+    const parseResults = await Promise.all(
+      uploadedFileIds.map((fileId) => parseUploadedFile(fileId)),
+    )
+    const preparedFiles: UploadedFileView[] = parseResults.map((parseResult, index) => ({
+      file_id: parseResult.file_id,
+      original_name: parseResult.original_name || files[index]?.name || parseResult.file_id,
+      extension: files[index]?.name.split('.').pop() || '',
+      mime_type: files[index]?.type || null,
+      size_bytes: files[index]?.size || 0,
+      status: 'uploaded',
+      content_type: parseResult.content_type,
+      conversion_status: parseResult.conversion_status,
+    }))
+    uploadedFiles.value.push(...preparedFiles)
+    message.success(`已上传并解析 ${preparedFiles.length} 个附件`)
   } catch {
-    message.error('附件上传失败')
+    // 解析失败时清理本批已经上传的孤立文件，避免用户界面未挂载但服务端一直保留。
+    if (uploadedFileIds.length) {
+      await deleteAgentFiles(uploadedFileIds).catch(() => undefined)
+    }
+    message.error('附件上传或解析失败')
   } finally {
     uploadingFiles.value = false
   }

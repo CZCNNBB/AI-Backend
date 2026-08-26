@@ -163,7 +163,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { Modal, message } from 'ant-design-vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeftOutlined, CloseOutlined, DatabaseOutlined, DeleteOutlined, EditOutlined, ExperimentOutlined, FileTextOutlined, InfoCircleOutlined, ReloadOutlined, RetweetOutlined, SearchOutlined, SyncOutlined, UnorderedListOutlined, UploadOutlined } from '@ant-design/icons-vue'
-import { uploadAgentFiles } from '@/api/file'
+import { uploadFiles } from '@/api/file'
 import { cancelIngestionRun, deleteKnowledgeDocument, getKnowledgeBase, reindexKnowledgeDocument, retryIngestionRun, searchIngestionRuns, searchKnowledgeDocuments, submitKnowledgeDocument, type IngestionRunRecord, type KnowledgeBaseItem, type KnowledgeDocumentRecord } from '@/api/knowledge'
 import KnowledgeRetrievalDrawer from './components/KnowledgeRetrievalDrawer.vue'
 
@@ -262,17 +262,24 @@ function removeSelectedFile(index: number) { selectedFiles.value.splice(index, 1
 /** 清理上传临时状态。 */
 function clearUpload() { selectedFiles.value = []; if (fileInput.value) fileInput.value.value = '' }
 
-/** 上传文件并逐个提交入库任务。 */
+/** 上传原始文件并提交后台入库任务；MinerU、切片和向量化不阻塞当前弹窗。 */
 async function uploadAndSubmit() {
   if (!selectedFiles.value.length) return
   uploading.value = true
   try {
-    const result = await uploadAgentFiles(selectedFiles.value)
-    for (const file of result.files) await submitKnowledgeDocument({ knowledge_id: knowledgeId.value, file_id: file.file_id })
-    message.success(`已提交 ${result.files.length} 份文档入库`)
+    const uploadResult = await uploadFiles(selectedFiles.value)
+    await Promise.all(
+      uploadResult.file_ids.map((fileId) => submitKnowledgeDocument({
+        knowledge_id: knowledgeId.value,
+        file_id: fileId,
+      })),
+    )
     uploadOpen.value = false
     clearUpload()
-    await Promise.all([loadDocuments(), loadTasks(1)])
+    message.success(`已提交 ${uploadResult.file_ids.length} 份文档入库，请前往任务列表查看进度`)
+
+    // 弹窗在任务提交成功后立即结束等待；列表刷新属于辅助展示，不阻塞用户操作。
+    void Promise.all([loadDocuments(), loadTasks(1)]).catch(() => undefined)
   } finally { uploading.value = false }
 }
 

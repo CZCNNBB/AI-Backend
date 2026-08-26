@@ -1,6 +1,7 @@
 """知识文档入库任务执行器。"""
 
 import hashlib
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -48,6 +49,14 @@ class IngestionExecutor:
         content = await self.file_service.read_record_content(file_record)
         if not content.strip():
             raise ValueError("文件内容源为空，无法执行知识入库")
+        logger.info(
+            "知识入库内容源读取完成: run_id=%s file_id=%s file_name=%r converter=%s content_chars=%s",
+            run.run_id,
+            run.file_id,
+            file_record.original_name,
+            file_record.converter_name or "无需转换",
+            len(content),
+        )
 
         # 优先使用任务提交时保存的文档级配置快照，旧任务没有快照时回退知识库默认配置。
         task_split_config = (run.payload or {}).get("split_config")
@@ -60,19 +69,49 @@ class IngestionExecutor:
         chunks = split_result["chunks"]
         if not chunks:
             raise ValueError("文件切片结果为空，无法执行知识入库")
+        logger.info(
+            "知识文档切片完成: run_id=%s split_method=%s split_strategy=%s chunk_count=%s",
+            run.run_id,
+            split_result["split_method"],
+            split_result["split_strategy"] or "无",
+            len(chunks),
+        )
 
         target_version = document.index_version + 1 if run.operation == "reindex" else document.index_version
         chunk_records: list[KnowledgeChunk] = []
         try:
             # 每次尝试都先清理该文件旧向量，防止重试时残留重复或脏数据。
             await vector_store_service.delete_file_vectors(knowledge.collection_name, run.file_id)
+            logger.info(
+                "知识入库旧向量清理完成: run_id=%s collection=%s file_id=%s",
+                run.run_id,
+                knowledge.collection_name,
+                run.file_id,
+            )
 
             # 单次入库只解析一次模型连接信息，并按模型配置的 batch_size 分批处理。
             embedding_resource = resolve_model_resource(knowledge.embedding_model, "embedding")
             batch_size = embedding_resource.embedding_batch_size
             total_batches = (len(chunks) + batch_size - 1) // batch_size
+            logger.info(
+                "知识入库向量化开始: run_id=%s model_code=%s dimension=%s chunk_count=%s batch_size=%s total_batches=%s",
+                run.run_id,
+                knowledge.embedding_model,
+                knowledge.embedding_dimension,
+                len(chunks),
+                batch_size,
+                total_batches,
+            )
             for batch_index, batch_start in enumerate(range(0, len(chunks), batch_size), start=1):
                 chunk_batch = chunks[batch_start:batch_start + batch_size]
+                batch_started_at = time.perf_counter()
+                logger.info(
+                    "知识入库批次开始: run_id=%s batch=%s/%s chunks=%s",
+                    run.run_id,
+                    batch_index,
+                    total_batches,
+                    len(chunk_batch),
+                )
                 embeddings = await embedding_service.embed_texts(
                     texts=[chunk.content for chunk in chunk_batch],
                     model_code=knowledge.embedding_model,
@@ -131,15 +170,22 @@ class IngestionExecutor:
                 )
                 chunk_records.extend(batch_chunk_records)
                 logger.info(
-                    "知识入库批次完成: run_id=%s batch=%s/%s chunks=%s",
+                    "知识入库批次完成: run_id=%s batch=%s/%s chunks=%s elapsed_seconds=%.3f",
                     run.run_id,
                     batch_index,
                     total_batches,
                     len(chunk_batch),
+                    time.perf_counter() - batch_started_at,
                 )
 
             # 整份文档写完后统一刷新，保证数据库提交成功时全部向量均已可检索。
             await vector_store_service.flush_collection(knowledge.collection_name)
+            logger.info(
+                "知识入库 Milvus 刷新完成: run_id=%s collection=%s vector_count=%s",
+                run.run_id,
+                knowledge.collection_name,
+                len(chunk_records),
+            )
         except Exception:
             # 单个分块失败时，前面已经成功写入的向量不能留在可检索 Collection 中。
             await self._cleanup_file_vectors(knowledge.collection_name, run)
@@ -169,6 +215,13 @@ class IngestionExecutor:
                 current_document.updated_at = utc_now()
                 db.add(current_document)
                 db.commit()
+                logger.info(
+                    "知识入库 PostgreSQL 证据提交完成: run_id=%s document_id=%s index_version=%s chunk_count=%s",
+                    run.run_id,
+                    document.id,
+                    target_version,
+                    len(chunk_records),
+                )
             except Exception:
                 db.rollback()
                 # PostgreSQL 最终提交失败时也必须回收本次 Milvus 写入，
@@ -178,6 +231,12 @@ class IngestionExecutor:
 
     async def _execute_delete(self, run: IngestionRun) -> None:
         """幂等删除文档向量和 PostgreSQL 分块证据。"""
+        logger.info(
+            "知识文档删除执行开始: run_id=%s knowledge_id=%s file_id=%s",
+            run.run_id,
+            run.knowledge_id,
+            run.file_id,
+        )
         with get_db_session() as db:
             knowledge = db.exec(
                 select(KnowledgeBase).where(KnowledgeBase.knowledge_id == run.knowledge_id)
@@ -197,6 +256,12 @@ class IngestionExecutor:
             collection_name=collection_name,
             file_id=run.file_id,
         )
+        logger.info(
+            "知识文档 Milvus 向量删除完成: run_id=%s collection=%s file_id=%s",
+            run.run_id,
+            collection_name,
+            run.file_id,
+        )
 
         with get_db_session() as db:
             current_document = db.get(KnowledgeDocument, document_id)
@@ -210,6 +275,11 @@ class IngestionExecutor:
             current_document.updated_at = utc_now()
             db.add(current_document)
             db.commit()
+        logger.info(
+            "知识文档 PostgreSQL 证据删除完成: run_id=%s document_id=%s",
+            run.run_id,
+            document_id,
+        )
 
     @staticmethod
     async def _cleanup_file_vectors(collection_name: str, run: IngestionRun) -> None:
@@ -236,16 +306,16 @@ class IngestionExecutor:
             if document is None:
                 raise ValueError(f"任务关联的知识库文档不存在: {run.document_id}")
 
-            # 文件服务负责必要的内容源构建；知识库不重复实现 PDF/Markdown 解析逻辑。
-            file_record = await self.file_service.ensure_content_source(db, run.file_id)
-            if not self.file_service.is_content_source_ready(file_record):
-                raise ValueError(self.file_service.get_content_not_ready_message(file_record))
-
-            # 记录对象离开 Session 后仍保留本次执行所需的标量字段。
+            # 先结束知识库元数据读取 Session。MinerU 轮询期间不能持有这条数据库连接。
             db.expunge(knowledge)
             db.expunge(document)
-            db.expunge(file_record)
-            return knowledge, document, file_record
+
+        # 文件服务使用“标记 processing → 关闭 Session → 解析 → 短事务落结果”的流程，
+        # 知识库只消费最终内容源，不重复实现 PDF、MinerU 或 Markdown 解析协议。
+        file_record = await self.file_service.prepare_content_source(run.file_id)
+        if not self.file_service.is_content_source_ready(file_record):
+            raise ValueError(self.file_service.get_content_not_ready_message(file_record))
+        return knowledge, document, file_record
 
     def _split_content(self, content: str, raw_config: dict[str, Any]) -> dict[str, Any]:
         """根据知识库保存的配置选择单一切片方式或组合切片策略。"""

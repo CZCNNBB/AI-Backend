@@ -10,6 +10,7 @@ from app.server.agent.src.model.service import ModelConfigService
 from app.server.file.src.models.file_models import UploadedFileRecord
 from app.server.knowledge.src.config import knowledge_config
 from app.server.knowledge.src.ingestion.queue_service import ingestion_queue_service
+from app.server.knowledge.src.logging_config import logger
 from app.server.knowledge.src.models import KnowledgeBase, KnowledgeDocument
 from app.server.knowledge.src.repositories import (
     KnowledgeBaseRepository,
@@ -204,6 +205,12 @@ class KnowledgeManagementService:
                 ),
             )
         elif document.status == "indexed" and not request.force_reindex:
+            logger.info(
+                "知识文档已完成索引，跳过重复提交: knowledge_id=%s file_id=%s document_id=%s",
+                request.knowledge_id,
+                request.file_id,
+                document.id,
+            )
             return KnowledgeDocumentSubmitResponse(
                 document=self.to_document_response(document, uploaded_file),
                 run=None,
@@ -228,6 +235,15 @@ class KnowledgeManagementService:
             active_config = (run.payload or {}).get("split_config") or knowledge.split_config
             if active_config != split_config:
                 raise ValueError("该文档已有使用不同切片配置的任务正在执行，请等待任务结束后重试")
+        logger.info(
+            "知识入库任务提交完成: run_id=%s knowledge_id=%s file_id=%s operation=%s reused=%s priority=%s",
+            run.run_id,
+            request.knowledge_id,
+            request.file_id,
+            operation,
+            reused,
+            request.priority,
+        )
         db.refresh(document)
         return KnowledgeDocumentSubmitResponse(
             document=self.to_document_response(document, uploaded_file),
@@ -260,6 +276,12 @@ class KnowledgeManagementService:
         document = self._require_document(db, knowledge_id, file_id)
         uploaded_file = self._get_uploaded_file(db, file_id)
         if document.status == "deleted":
+            logger.info(
+                "知识文档已删除，跳过重复删除: knowledge_id=%s file_id=%s document_id=%s",
+                knowledge_id,
+                file_id,
+                document.id,
+            )
             return KnowledgeDocumentDeleteResponse(
                 document=self.to_document_response(document, uploaded_file),
                 run=None,
@@ -277,6 +299,14 @@ class KnowledgeManagementService:
             raise ValueError(
                 f"该文档已有 {run.operation} 任务正在执行，不能同时提交 delete 任务"
             )
+        logger.info(
+            "知识删除任务提交完成: run_id=%s knowledge_id=%s file_id=%s reused=%s priority=%s",
+            run.run_id,
+            knowledge_id,
+            file_id,
+            reused,
+            priority,
+        )
         db.refresh(document)
         return KnowledgeDocumentDeleteResponse(
             document=self.to_document_response(document, uploaded_file),

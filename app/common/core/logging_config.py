@@ -20,3 +20,9 @@ def configure_application_logging() -> None:
 
     # 显式设置项目日志器级别，保证 Uvicorn 调整根日志器后 Agent INFO 日志仍然可见。
     logging.getLogger("ai_backend").setLevel(level)
+
+    # httpx/httpcore 在 INFO 级别会为每次 MinerU 轮询输出英文请求日志。
+    # 平台已经记录任务提交、状态变化和结果读取等中文业务日志，因此这里只保留网络警告，
+    # 避免长任务按轮询间隔持续刷屏，同时不会吞掉连接失败等重要异常。
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)

@@ -8,7 +8,9 @@ from uuid import uuid4
 from fastapi import UploadFile
 from sqlmodel import Session
 
+from app.common.db.postgres_db import get_db_session
 from app.server.file.src.config.file_config import FileServiceConfig
+from app.server.file.src.logging_config import logger
 from app.server.file.src.models.file_models import UploadedFileRecord
 from app.server.file.src.parser.file_parser import FileContentBuildResult, FileParser
 from app.server.file.src.repository.file_repository import FileRepository
@@ -42,25 +44,26 @@ class FileService:
         self.config = config or FileServiceConfig.from_env()
 
     async def upload_files(self, db: Session, files: list[UploadFile]) -> FileUploadResponse:
-        """上传文件并在当前请求内完成内容源构建。
+        """保存原始文件并返回 file_id，不在上传接口中执行内容解析。
 
-        文件转换虽然属于上传请求的一部分，但 PDF 转 Markdown 会通过 asyncio.to_thread
-        运行在线程池中，避免阻塞 FastAPI 的事件循环。
+        上传接口只负责文件大小校验、磁盘保存和数据库记录创建。MinerU、PDF 转 Markdown、
+        文本读取和知识入库均由拿到 file_id 的后续业务场景显式触发。
 
         Args:
             db: PostgreSQL Session。
             files: FastAPI 接收的上传文件列表。
 
         Returns:
-            所有文件均已完成内容源构建后的文件视图列表。
+            按上传顺序返回的文件 ID 列表。
         """
         if not files:
             raise RuntimeError("至少需要上传一个文件。")
         if len(files) > self.config.max_files_per_upload:
             raise RuntimeError(f"单次最多上传 {self.config.max_files_per_upload} 个文件。")
 
+        logger.info("文件上传开始: file_count=%s", len(files))
+
         self.get_upload_dir().mkdir(parents=True, exist_ok=True)
-        uploaded: list[UploadedFileView] = []
         created_file_ids: list[str] = []
         total_size = 0
 
@@ -103,16 +106,33 @@ class FileService:
                     )
                     self.repository.add(db, record)
                     created_file_ids.append(file_id)
+                    logger.info(
+                        "上传文件已保存: file_id=%s file_name=%r extension=%s size_bytes=%s",
+                        file_id,
+                        original_name,
+                        extension or "无扩展名",
+                        file_size,
+                    )
 
-                    # 必须在 HTTP 响应返回前完成转换，保证 Agent 拿到 file_id 后内容源已可用。
-                    record = await self.ensure_content_source(db, file_id)
-                    uploaded.append(self.to_view(record))
+                    # 上传与解析必须保持职责分离。记录保持 pending，后续知识库 Worker、
+                    # Agent 附件准备或人工 /file/parse 再根据 file_id 构建内容源。
                 finally:
                     upload_file.file.close()
 
-            return FileUploadResponse(files=uploaded)
+            logger.info(
+                "文件上传完成，等待后续业务处理: file_count=%s total_size_bytes=%s file_ids=%s",
+                len(created_file_ids),
+                total_size,
+                created_file_ids,
+            )
+            return FileUploadResponse(file_ids=created_file_ids)
         except Exception:
             # 同一次上传中的任意文件失败时，回滚已经创建的文件记录和目录，保持结果一致。
+            logger.exception(
+                "文件上传失败，准备回滚: created_file_count=%s total_size_bytes=%s",
+                len(created_file_ids),
+                total_size,
+            )
             self.rollback_uploaded_files(db, created_file_ids)
             raise
 
@@ -131,7 +151,7 @@ class FileService:
         return self.to_view(self.get_required_record(db, file_id))
 
     async def parse_file(self, db: Session, file_id: str, force: bool = False) -> FileParseResponse:
-        """构建内容源并返回全文解析结果，仅供管理和调试接口使用。"""
+        """根据 file_id 显式构建内容源，并返回解析结果供业务场景或调试使用。"""
         record = await self.ensure_content_source(db, file_id, force)
         content = "" if record.content_type == "image" else await self.read_record_content(record)
         return self.to_parse_response(record, content)
@@ -140,8 +160,20 @@ class FileService:
         """确保文件拥有可读取内容源；Outline 会在 Agent Run 中临时抽取。"""
         record = self.get_required_record(db, file_id)
         if not force and self.is_content_source_ready(record):
+            logger.debug(
+                "文件内容源已就绪，直接复用: file_id=%s converter=%s",
+                file_id,
+                record.converter_name or "无需转换",
+            )
             return record
 
+        logger.info(
+            "文件内容源构建开始: file_id=%s file_name=%r extension=%s force=%s",
+            record.file_id,
+            record.original_name,
+            record.extension or "无扩展名",
+            force,
+        )
         record.conversion_status = "processing"
         record.conversion_error = None
         record.updated_at = datetime.now()
@@ -155,6 +187,13 @@ class FileService:
             self.apply_content_build_result(record, result)
             record.updated_at = datetime.now()
             self.repository.update(db, record)
+            logger.info(
+                "文件内容源构建完成: file_id=%s content_type=%s converter=%s status=%s",
+                record.file_id,
+                record.content_type,
+                record.converter_name or "无需转换",
+                record.conversion_status,
+            )
             return record
         except Exception as error:
             record.content_type = "unsupported"
@@ -162,7 +201,107 @@ class FileService:
             record.conversion_error = str(error)
             record.updated_at = datetime.now()
             self.repository.update(db, record)
+            logger.exception(
+                "文件内容源构建失败: file_id=%s file_name=%r reason=%s",
+                record.file_id,
+                record.original_name,
+                error,
+            )
             raise
+
+    async def prepare_content_source(self, file_id: str, force: bool = False) -> UploadedFileRecord:
+        """使用多个短事务构建内容源，供知识库 Worker 等后台业务调用。
+
+        MinerU 和 PDF 解析可能持续较长时间，因此不能在等待解析期间持有 PostgreSQL
+        Session 或连接。该方法先用短事务标记 processing，关闭 Session 后执行解析，
+        最后重新打开短事务写入 success 或 failed 状态。
+
+        Args:
+            file_id: 待处理的文件 ID。
+            force: 是否忽略已有内容源并强制重新解析。
+
+        Returns:
+            已脱离 Session、可供后续知识入库读取的文件记录。
+        """
+        with get_db_session() as db:
+            record = self.get_required_record(db, file_id)
+            if not force and self.is_content_source_ready(record):
+                db.expunge(record)
+                return record
+
+            logger.info(
+                "后台文件内容源构建开始: file_id=%s file_name=%r extension=%s force=%s",
+                record.file_id,
+                record.original_name,
+                record.extension or "无扩展名",
+                force,
+            )
+            record.conversion_status = "processing"
+            record.conversion_error = None
+            record.updated_at = datetime.now()
+            self.repository.update(db, record)
+
+            # 只复制解析需要的标量字段，提交并关闭 Session 后不再访问 ORM 记录。
+            original_path = record.storage_path
+            extension = record.extension
+            markdown_path = str(self.get_file_dir(record.file_id) / "content.md")
+            db.commit()
+
+        try:
+            # 网络轮询和本地文件转换全部发生在数据库事务之外。
+            result = await self.parser.build_content_source(
+                original_path=original_path,
+                extension=extension,
+                markdown_path=markdown_path,
+            )
+        except Exception as error:
+            self._save_background_conversion_failure(file_id, error)
+            raise
+
+        with get_db_session() as db:
+            current_record = self.get_required_record(db, file_id)
+            self.apply_content_build_result(current_record, result)
+            current_record.updated_at = datetime.now()
+            self.repository.update(db, current_record)
+            db.commit()
+            # commit 默认会过期 ORM 字段；刷新后再脱离 Session，确保 Worker 后续可安全读取。
+            db.refresh(current_record)
+            db.expunge(current_record)
+
+        logger.info(
+            "后台文件内容源构建完成: file_id=%s content_type=%s converter=%s status=%s",
+            current_record.file_id,
+            current_record.content_type,
+            current_record.converter_name or "无需转换",
+            current_record.conversion_status,
+        )
+        return current_record
+
+    def _save_background_conversion_failure(self, file_id: str, error: Exception) -> None:
+        """使用独立短事务保存后台内容源构建失败状态。
+
+        Args:
+            file_id: 解析失败的文件 ID。
+            error: 原始解析异常。
+        """
+        try:
+            with get_db_session() as db:
+                current_record = self.get_required_record(db, file_id)
+                current_record.content_type = "unsupported"
+                current_record.conversion_status = "failed"
+                current_record.conversion_error = str(error)
+                current_record.updated_at = datetime.now()
+                self.repository.update(db, current_record)
+                db.commit()
+        except Exception:
+            # 状态落库失败不能覆盖真正的解析异常，堆栈同时保留 file_id 便于排查。
+            logger.exception("后台文件解析失败状态写入数据库失败: file_id=%s", file_id)
+
+        logger.error(
+            "后台文件内容源构建失败: file_id=%s reason=%s",
+            file_id,
+            error,
+        )
 
     async def read_file_lines(
         self,

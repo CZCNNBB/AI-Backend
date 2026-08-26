@@ -10,13 +10,14 @@
 
 ### 2.1 文件服务
 
-文件服务负责文件的上传、保存、转换和读取。
+文件服务负责文件的上传、保存、显式内容源构建和读取，各阶段通过 `file_id` 衔接。
 
 - 每个文件保存到 `data/uploads/{file_id}/`。
 - 源文件保存为 `original.xxx`。
-- PDF 等可转换文件在上传请求中同步转换为 `content.md`。
+- `/file/upload` 只保存原文件并返回 `file_id`，不会执行内容解析。
+- Agent 附件前端在上传后显式调用 `/file/parse`，PDF 优先通过 MinerU 转换为 `content.md`。
 - 纯文本、代码等文件直接以源文件作为内容源。
-- 图片和扫描件暂不启用 OCR，后续由 OCR 服务接入。
+- 图片暂不提取文字；扫描型 PDF 由 MinerU 处理。
 
 ### 2.2 文件上下文中间件
 
@@ -117,8 +118,8 @@
 ```text
 用户上传附件
   -> 文件服务保存 original.xxx
-  -> 可转换文件同步生成 content.md
   -> 前端获得 file_id
+  -> 前端调用 /file/parse 显式构建内容源
   -> 调用 /agent/messages 时传入 file_ids
   -> FileContextMiddleware 注入文件索引
   -> Agent 根据目录判断需要阅读的文件

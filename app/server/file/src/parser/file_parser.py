@@ -7,6 +7,7 @@ from typing import Any
 
 import pymupdf4llm
 
+from app.server.file.src.logging_config import logger
 from app.server.file.src.ocr.ocr_service import OcrService
 
 
@@ -47,7 +48,8 @@ class FileParser:
     ) -> FileContentBuildResult:
         """根据文件类型构建 Agent 可读取的内容源。
 
-        文本、代码不转换；PDF 使用 pymupdf4llm 转换为 Markdown；图片暂不做文本识别。
+        文本、代码不转换；PDF 优先使用 MinerU，健康检查失败时回退 pymupdf4llm；
+        图片暂不做文本识别。
 
         Args:
             original_path: 上传原文件的磁盘路径。
@@ -80,14 +82,38 @@ class FileParser:
             )
 
         if normalized_extension in self.MARKDOWN_CONVERSION_EXTENSIONS:
-            markdown = await asyncio.to_thread(self.convert_pdf_to_markdown, source_path)
+            converter_name = "pymupdf4llm"
+            if await self.ocr_service.is_available():
+                # MinerU 健康时统一使用 MinerU。任务失败或超时应明确暴露，不能静默切换解析器，
+                # 否则平台会掩盖 MinerU 的真实故障并产生难以解释的解析质量差异。
+                markdown = await self.ocr_service.recognize_to_markdown(str(source_path))
+                converter_name = "mineru"
+                logger.info(
+                    "PDF 解析器选择完成: file_name=%r converter=mineru",
+                    source_path.name,
+                )
+            else:
+                # 健康检查失败只代表本次无法使用远端 MinerU，本地解析器在线程池中执行，
+                # 避免同步 PDF 解析阻塞 FastAPI 事件循环。
+                markdown = await asyncio.to_thread(self.convert_pdf_to_markdown, source_path)
+                logger.warning(
+                    "PDF 解析器已回退: file_name=%r converter=pymupdf4llm",
+                    source_path.name,
+                )
+
             target_path = Path(markdown_path)
             await asyncio.to_thread(self.write_text_atomically, target_path, markdown)
+            logger.info(
+                "PDF Markdown 缓存写入完成: file_name=%r converter=%s markdown_chars=%s",
+                source_path.name,
+                converter_name,
+                len(markdown),
+            )
             return FileContentBuildResult(
                 str(target_path),
                 "markdown",
                 "success",
-                "pymupdf4llm",
+                converter_name,
             )
 
         raise RuntimeError(f"暂不支持该文件类型的内容转换: {normalized_extension or 'unknown'}")
@@ -116,10 +142,7 @@ class FileParser:
         return cleaned if not cleaned or cleaned.startswith(".") else f".{cleaned}"
 
     def convert_pdf_to_markdown(self, source_path: Path) -> str:
-        """使用 pymupdf4llm 将 PDF 转换为 Markdown。
-
-        保持 pymupdf4llm 默认 OCR 行为：文本 PDF 不强制 OCR，扫描页在本地安装
-        OCR 引擎时自动处理。
+        """在 MinerU 健康检查失败时，使用 pymupdf4llm 转换 PDF。
 
         Args:
             source_path: PDF 原文件路径。
@@ -127,7 +150,7 @@ class FileParser:
         Returns:
             转换得到的 Markdown 文本。
         """
-        # 当前未接入 MinerU，因此显式关闭 pymupdf4llm 的自动 OCR。
+        # 回退解析器不启用本地 OCR；扫描型 PDF 应由 MinerU 处理，避免环境差异导致隐式行为。
         markdown = pymupdf4llm.to_markdown(str(source_path), use_ocr=False)
         if not isinstance(markdown, str) or not markdown.strip():
             raise RuntimeError(

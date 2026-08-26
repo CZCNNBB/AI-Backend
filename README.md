@@ -84,8 +84,9 @@ POST /agent/mcp/invoke
 主要接口：
 
 ```text
-POST /file/upload
-POST /file/delete
+POST /file/upload  # 只保存原文件并返回 file_ids
+POST /file/parse   # 根据 file_id 显式构建内容源
+POST /file/delete  # 删除文件记录和磁盘文件
 ```
 
 Agent 在一次调用中只能读取请求明确授权的 `file_ids`，避免不同请求之间直接访问未授权附件。

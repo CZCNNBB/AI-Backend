@@ -21,9 +21,9 @@ class UploadedFileView(BaseModel):
 
 
 class FileUploadResponse(BaseModel):
-    """文件上传响应。"""
+    """纯文件上传响应，只返回后续业务需要引用的文件 ID。"""
 
-    files: list[UploadedFileView] = Field(default_factory=list, description="已上传文件列表")
+    file_ids: list[str] = Field(default_factory=list, description="已上传文件 ID 列表")
 
 
 class FileDetailRequest(BaseModel):

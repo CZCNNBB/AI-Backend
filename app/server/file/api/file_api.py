@@ -29,7 +29,7 @@ def file_health():
 
 @router.post("/upload", response_model=Result[FileUploadResponse], summary="上传文件")
 async def upload_files(files: list[UploadFile] = File(...), db: Session = Depends(get_postgres_engine)):
-    """上传文件，并在响应返回前同步完成内容源构建。"""
+    """只保存原始文件并返回 file_id，内容解析由后续业务场景显式触发。"""
     return Result.success(await file_service.upload_files(db, files))
 
 
