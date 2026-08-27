@@ -9,6 +9,7 @@ from sqlmodel import Session
 from app.common.db.postgres_db import get_postgres_engine
 from app.common.schemas.result import Result
 from app.server.agent.src.agent import AgentMessageService, AgentService
+from app.server.agent.src.checkpoint import agent_checkpoint_service
 from app.server.agent.src.model import ModelConfigService
 from app.server.agent.src.model.schemas import ModelConfigSearchRequest
 from app.server.agent.src.schemas.request import AgentMessageRequest
@@ -19,7 +20,8 @@ from app.server.fastmcp.src.service import MCPToolService
 
 
 router = APIRouter()
-agent_service = AgentService()
+# 主 AgentService 和 FastAPI lifespan 共用同一个 Checkpointer 服务，确保每个 Worker 只有一个池。
+agent_service = AgentService(checkpoint_service=agent_checkpoint_service)
 agent_message_service = AgentMessageService(agent_service=agent_service)
 model_config_service = ModelConfigService()
 mcp_tool_service = MCPToolService()

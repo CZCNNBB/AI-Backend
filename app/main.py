@@ -72,4 +72,13 @@ if __name__ == "__main__":
     app = create_app()
     print_startup_banner()
     print_routes(app)
-    uvicorn.run("app.main:create_app", host=os.getenv("FASTAPI_HOST", "127.0.0.1"), port=int(os.getenv("FASTAPI_PORT", 8090)), loop="asyncio", workers=1, reload=True, factory=True)
+    uvicorn.run(
+        "app.main:create_app",
+        host=os.getenv("FASTAPI_HOST", "127.0.0.1"),
+        port=int(os.getenv("FASTAPI_PORT", 8090)),
+        # Windows 默认 ProactorEventLoop 不支持 psycopg3 异步连接，使用项目统一工厂。
+        loop="app.bootstrap:create_event_loop",
+        workers=1,
+        reload=True,
+        factory=True,
+    )
