@@ -31,6 +31,18 @@
         <a-form-item label="描述" name="description">
           <a-textarea v-model:value="form.description" :rows="2" placeholder="Agent 用途简介" />
         </a-form-item>
+        <a-form-item label="所属业务平台" name="platform_ids" required>
+          <a-select
+            v-model:value="form.platform_ids"
+            mode="multiple"
+            placeholder="先选择该 Agent 可以提供给哪些业务平台"
+            :options="platformOptions"
+            show-search
+            option-filter-prop="label"
+            @change="loadEligibleTools"
+          />
+          <div class="text-gray-500 mt-1">工具列表只展示同时覆盖这里全部业务平台的 MCP Tool。</div>
+        </a-form-item>
         <a-form-item label="状态" name="status">
           <a-radio-group v-model:value="form.status">
             <a-radio value="active">启用</a-radio>
@@ -203,8 +215,9 @@ import {
   type AgentTemplate,
   upsertAgentTemplate,
 } from '@/api/agentTemplate'
-import { getCapabilities } from '@/api/capabilities'
+import { listEligibleMcpTools } from '@/api/mcp'
 import { searchModelConfigs } from '@/api/modelConfigs'
+import { searchBusinessPlatforms } from '@/api/platform'
 
 defineOptions({ name: 'AgentEditView' })
 
@@ -221,6 +234,7 @@ const form = reactive<AgentTemplate>({
   agent_id: '',
   agent_name: '',
   description: '',
+  platform_ids: [],
   status: 'active',
   config: {
     system_prompt: '',
@@ -263,10 +277,12 @@ const contextSummarizationEnabled = computed({
 const rules = {
   agent_id: [{ required: true, message: '请输入 Agent ID' }],
   agent_name: [{ required: true, message: '请输入展示名称' }],
+  platform_ids: [{ required: true, type: 'array', min: 1, message: '请至少选择一个业务平台' }],
 }
 
 // 下拉数据
 const toolOptions = ref<{ label: string; value: string }[]>([])
+const platformOptions = ref<{ label: string; value: number }[]>([])
 const modelOptions = ref<{ label: string; value: string }[]>([])
 const subAgentOptions = ref<{ label: string; value: string }[]>([])
 const a2aSubAgentList = ref<string[]>([])
@@ -274,11 +290,15 @@ const a2aSubAgentList = ref<string[]>([])
 /** 加载下拉数据 */
 async function loadOptions() {
   try {
-    const cap = await getCapabilities()
-    toolOptions.value = (cap.registered_tools || []).map((name) => ({ label: name, value: name }))
+    const platformPage = await searchBusinessPlatforms({ page: 1, page_size: 100, status: 'enabled' })
+    platformOptions.value = (platformPage.items || []).map((item) => ({
+      label: `${item.platform_name} (${item.platform_code})`,
+      value: item.id,
+    }))
   } catch {
-    toolOptions.value = []
+    platformOptions.value = []
   }
+  await loadEligibleTools()
   try {
     const modelPage = await searchModelConfigs({ page: 1, page_size: 100, model_type: 'chat', enabled: true })
     modelOptions.value = (modelPage.items || []).map((item) => ({ label: item.model_code, value: item.model_code }))
@@ -295,6 +315,20 @@ async function loadOptions() {
   }
 }
 
+/** 根据 Agent 当前平台集合加载可安全挂载的 MCP Tool。 */
+async function loadEligibleTools() {
+  if (!form.platform_ids.length) {
+    toolOptions.value = []
+    return
+  }
+  try {
+    const tools = await listEligibleMcpTools(form.platform_ids)
+    toolOptions.value = tools.map((item) => ({ label: item.name, value: item.name }))
+  } catch {
+    toolOptions.value = []
+  }
+}
+
 /** 加载编辑数据 */
 async function loadDetail() {
   if (!isEdit.value) return
@@ -303,6 +337,7 @@ async function loadDetail() {
   form.agent_id = detail.agent_id
   form.agent_name = detail.agent_name
   form.description = detail.description || ''
+  form.platform_ids = [...(detail.platform_ids || [])]
   form.status = detail.status
   form.config = {
     ...form.config,
@@ -337,6 +372,7 @@ async function onSubmit() {
       agent_id: form.agent_id,
       agent_name: form.agent_name,
       description: form.description,
+      platform_ids: form.platform_ids,
       status: form.status,
       config: form.config,
     })

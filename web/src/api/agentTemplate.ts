@@ -47,6 +47,7 @@ export interface AgentTemplate {
   agent_id: string
   agent_name: string
   description?: string | null
+  platform_ids: number[]
   config: AgentTemplateConfig
   status: string
   created_at?: string | null
@@ -68,6 +69,7 @@ export function upsertAgentTemplate(payload: {
   agent_id: string
   agent_name: string
   description?: string | null
+  platform_ids: number[]
   config: AgentTemplateConfig
   status?: string
 }) {

@@ -11,7 +11,16 @@ class AgentRuntimeContext(BaseModel):
     """
 
     thread_id: str = Field(default="", description="会话线程 ID，优先来自 conversation_id")
+    checkpoint_thread_id: str = Field(default="", description="带平台和用户命名空间的内部 Checkpoint 线程 ID")
     run_id: str = Field(default="", description="本次 Agent 调用 ID，用于隔离单次运行中的临时 state")
+    platform_id: int | None = Field(default=None, description="当前业务平台 ID")
+    external_user_id: str | None = Field(default=None, description="当前外部业务用户 ID")
+    runtime_credentials: dict[str, str] = Field(
+        default_factory=dict,
+        exclude=True,
+        repr=False,
+        description="本次运行敏感凭证，只供系统拦截器使用",
+    )
     query: str = Field(default="", description="本次运行的用户问题或任务指令")
     sys_var: dict[str, Any] = Field(default_factory=dict, description="系统变量，例如 thread_id")
     user_var: dict[str, Any] = Field(default_factory=dict, description="用户变量或编排层输入变量")
@@ -31,4 +40,8 @@ class AgentRuntimeContext(BaseModel):
         Returns:
             可传给 LangChain agent.ainvoke(..., context=...) 的字典。
         """
-        return self.model_dump()
+        context_data = self.model_dump()
+        # runtime_credentials 在模型序列化中默认排除，防止意外落入日志或持久化数据；
+        # 这里只在调用 LangChain runtime 时显式放回内存字典，供 MCP 拦截器读取。
+        context_data["runtime_credentials"] = dict(self.runtime_credentials)
+        return context_data

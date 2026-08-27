@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 class AgentRunSearchRequest(BaseModel):
     """查询 Agent 运行记录列表的请求参数。"""
 
+    external_user_id: str = Field(..., min_length=1, max_length=150, description="外部业务用户 ID")
     run_id: str | None = Field(default=None, description="运行 ID，支持精确匹配")
     run_type: Literal["main", "sub"] | None = Field(default=None, description="运行类型：main=主 Agent，sub=A2A 子 Agent")
     parent_run_id: str | None = Field(default=None, description="父级运行 ID，用于查询某次主 Agent 触发的子 Agent")
@@ -20,18 +21,22 @@ class AgentRunDetailRequest(BaseModel):
     """查询单条 Agent 运行记录详情的请求参数。"""
 
     run_id: str = Field(..., min_length=1, description="运行 ID")
+    external_user_id: str = Field(..., min_length=1, max_length=150, description="外部业务用户 ID")
 
 
 class AgentRunChainRequest(BaseModel):
     """查询某次主 Agent 运行链路的请求参数。"""
 
     run_id: str = Field(..., min_length=1, description="主 Agent 运行 ID")
+    external_user_id: str = Field(..., min_length=1, max_length=150, description="外部业务用户 ID")
 
 
 class AgentRunView(BaseModel):
     """Agent 运行记录返回视图。"""
 
     run_id: str = Field(..., description="运行 ID")
+    platform_id: int = Field(..., description="业务平台 ID")
+    external_user_id: str = Field(..., description="外部业务用户 ID")
     run_type: str = Field(default="main", description="运行类型：main/sub")
     parent_run_id: str | None = Field(default=None, description="父级运行 ID")
     agent_id: str | None = Field(default=None, description="Agent 模板 ID")

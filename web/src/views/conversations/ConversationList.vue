@@ -7,6 +7,14 @@
     <h2 class="page-title">💬 会话历史</h2>
 
     <a-alert
+      v-if="!debugContextReady"
+      message="请先在页面顶部配置平台 API Key 和外部用户 ID。"
+      type="info"
+      show-icon
+      class="mb-4"
+    />
+
+    <a-alert
       message="提示：当前后端 /conversations/search 接口仅支持 conversation_id 精确匹配。"
       type="info"
       show-icon
@@ -59,16 +67,21 @@
  * - 精确搜索单条会话
  * - 表格单行展示
  */
-import { onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { searchConversations, type Conversation } from '@/api/conversation'
 import dayjs from 'dayjs'
+import {
+  BUSINESS_DEBUG_CONTEXT_CHANGED,
+  hasCompleteBusinessDebugContext,
+} from '@/utils/businessDebugContext'
 
 defineOptions({ name: 'ConversationListView' })
 
 const router = useRouter()
 const conversationId = ref('')
 const loading = ref(false)
+const debugContextReady = ref(hasCompleteBusinessDebugContext())
 const data = ref<Conversation[]>([])
 
 const columns = [
@@ -83,6 +96,11 @@ const columns = [
 
 /** 查询 */
 async function onSearch() {
+  debugContextReady.value = hasCompleteBusinessDebugContext()
+  if (!debugContextReady.value) {
+    data.value = []
+    return
+  }
   if (!conversationId.value.trim()) {
     data.value = []
     return
@@ -104,9 +122,14 @@ function formatTime(t?: string) {
   return t ? dayjs(t).format('YYYY-MM-DD HH:mm:ss') : '-'
 }
 
-onMounted(() => {
-  // 默认空状态
-})
+/** 顶部调试身份变化时同步页面提示状态。 */
+function onDebugContextChanged(): void {
+  debugContextReady.value = hasCompleteBusinessDebugContext()
+  if (!debugContextReady.value) data.value = []
+}
+
+onMounted(() => window.addEventListener(BUSINESS_DEBUG_CONTEXT_CHANGED, onDebugContextChanged))
+onBeforeUnmount(() => window.removeEventListener(BUSINESS_DEBUG_CONTEXT_CHANGED, onDebugContextChanged))
 </script>
 
 <style scoped>

@@ -149,6 +149,7 @@ class AgentSessionLifecycleTestCase(unittest.IsolatedAsyncioTestCase):
             [event["type"] for event in events],
             ["run_start", "agent_assembled", "model_delta", "run_end"],
         )
+        self.assertEqual(events[0]["data"]["conversation_id"], context.thread_id)
         self.assertEqual(len(sessions), 2)
         self.assertTrue(all(not session.active for session in sessions))
         lifecycle_service.finalize_run.assert_awaited_once()
@@ -159,11 +160,17 @@ class AgentSessionLifecycleTestCase(unittest.IsolatedAsyncioTestCase):
         context = AgentRuntimeContext(
             run_id="run-resume-short-session",
             thread_id="conversation-resume-short-session",
+            checkpoint_thread_id="platform:1:user:user-1:conversation:conversation-resume-short-session",
+            platform_id=1,
+            external_user_id="user-1",
             query="继续执行",
         )
         resume_request = AgentResumeRequest(
             run_id=context.run_id,
-            thread_id=context.thread_id,
+            conversation_id=context.thread_id,
+            thread_id=context.checkpoint_thread_id,
+            platform_id=1,
+            external_user_id="user-1",
             resume_value={"type": "approval", "data": {"approved": True}},
             stream=True,
         )
@@ -231,6 +238,7 @@ class AgentSessionLifecycleTestCase(unittest.IsolatedAsyncioTestCase):
             [event["type"] for event in events],
             ["resume_start", "agent_assembled", "model_delta", "run_end"],
         )
+        self.assertEqual(events[0]["data"]["conversation_id"], context.thread_id)
         self.assertEqual(len(sessions), 2)
         self.assertTrue(all(not session.active for session in sessions))
         service._finalize_resume_run.assert_awaited_once()
@@ -365,6 +373,7 @@ class AgentSessionLifecycleTestCase(unittest.IsolatedAsyncioTestCase):
 
         request = MCPToolUpsertRequest(
             name=" job_search ",
+            platform_ids=[1],
             api_url=" http://127.0.0.1:8080/api/jobs/search ",
         )
         self.assertEqual(request.name, "job_search")

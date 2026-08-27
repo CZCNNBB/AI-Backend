@@ -9,6 +9,15 @@
   <div>
     <h2 class="page-title">📊 系统总览</h2>
 
+    <a-alert
+      v-if="!debugContextReady"
+      type="info"
+      show-icon
+      class="mb-4"
+      message="尚未配置调试业务身份"
+      description="系统健康和 Agent 模板管理仍可正常使用；运行统计需要先在页面顶部配置平台 API Key 和外部用户 ID。"
+    />
+
     <!-- 顶部健康状态卡片 -->
     <a-row :gutter="16" class="mb-4">
       <a-col :span="6">
@@ -129,17 +138,22 @@
  * - 加载最近 5 条运行记录
  * - 简单统计：成功 / 失败 / 平均耗时
  */
-import { onMounted, reactive, ref } from 'vue'
+import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { getHealth } from '@/api/capabilities'
 import { searchAgentRuns, type AgentRun } from '@/api/agentRun'
 import { searchAgentTemplates } from '@/api/agentTemplate'
 import dayjs from 'dayjs'
+import {
+  BUSINESS_DEBUG_CONTEXT_CHANGED,
+  hasCompleteBusinessDebugContext,
+} from '@/utils/businessDebugContext'
 
 defineOptions({ name: 'DashboardView' })
 
 const router = useRouter()
 const loading = ref(false)
+const debugContextReady = ref(hasCompleteBusinessDebugContext())
 
 // 健康状态
 const health = reactive({ agent: { status: 'unknown' }, db: { status: 'unknown' }, model: { status: 'unknown' } })
@@ -200,6 +214,15 @@ async function loadAll() {
     }
 
     // 3. 最近 5 条运行记录
+    debugContextReady.value = hasCompleteBusinessDebugContext()
+    if (!debugContextReady.value) {
+      recentRuns.value = []
+      stats.weekTotal = 0
+      stats.todayTotal = 0
+      stats.todaySuccessRate = 0
+      stats.avgElapsed = 0
+      return
+    }
     try {
       const runRes = await searchAgentRuns({ page: 1, page_size: 5 })
       recentRuns.value = runRes.items || []
@@ -242,7 +265,17 @@ async function loadAll() {
   }
 }
 
-onMounted(loadAll)
+/** 调试身份变化后重新决定是否加载业务运行数据。 */
+function onDebugContextChanged(): void {
+  debugContextReady.value = hasCompleteBusinessDebugContext()
+  void loadAll()
+}
+
+onMounted(() => {
+  window.addEventListener(BUSINESS_DEBUG_CONTEXT_CHANGED, onDebugContextChanged)
+  void loadAll()
+})
+onBeforeUnmount(() => window.removeEventListener(BUSINESS_DEBUG_CONTEXT_CHANGED, onDebugContextChanged))
 </script>
 
 <style scoped>

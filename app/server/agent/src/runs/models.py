@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Column
+from sqlalchemy import BigInteger, Column, ForeignKey
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
@@ -24,6 +24,15 @@ class AgentRun(SQLModel, table=True):
     __table_args__ = {"schema": "agent"}
 
     run_id: str = Field(max_length=100, primary_key=True)
+    platform_id: int = Field(
+        sa_column=Column(
+            BigInteger,
+            ForeignKey("platform.business_platforms.id"),
+            nullable=False,
+            index=True,
+        )
+    )
+    external_user_id: str = Field(max_length=150, index=True)
     run_type: str = Field(default="main", max_length=30)
     parent_run_id: str | None = Field(default=None, max_length=100)
 

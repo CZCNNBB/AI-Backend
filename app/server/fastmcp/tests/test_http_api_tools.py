@@ -17,6 +17,7 @@ class HTTPAPIToolExecutorTestCase(unittest.IsolatedAsyncioTestCase):
         """tool/runtime/static 参数应正确进入 path、query、header 和 JSON body。"""
         request = MCPToolUpsertRequest(
             name="get_job",
+            platform_ids=[1],
             api_url="http://business.test/jobs/{job_id}",
             http_method="POST",
             static_headers={"X-App-Id": "ai-platform"},
@@ -70,6 +71,7 @@ class HTTPAPIToolExecutorTestCase(unittest.IsolatedAsyncioTestCase):
         """只有 source=tool 的字段可以出现在模型可见的 MCP 输入 Schema。"""
         request = MCPToolUpsertRequest(
             name="search_jobs",
+            platform_ids=[1],
             api_url="http://business.test/jobs",
             parameters=[
                 {"name": "keyword", "location": "query", "source": "tool", "required": True},
@@ -87,6 +89,7 @@ class HTTPAPIToolExecutorTestCase(unittest.IsolatedAsyncioTestCase):
         """object、boolean 等固定值不能以看似 JSON 的普通字符串混入请求。"""
         valid_request = MCPToolUpsertRequest(
             name="deepseek_test",
+            platform_ids=[1],
             api_url="http://business.test/chat/completions",
             parameters=[
                 {
@@ -111,6 +114,7 @@ class HTTPAPIToolExecutorTestCase(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValidationError):
             MCPToolUpsertRequest(
                 name="invalid_static_object",
+                platform_ids=[1],
                 api_url="http://business.test/chat/completions",
                 parameters=[
                     {
@@ -122,6 +126,52 @@ class HTTPAPIToolExecutorTestCase(unittest.IsolatedAsyncioTestCase):
                     }
                 ],
             )
+
+    async def test_runtime_bearer_uses_only_runtime_credentials(self) -> None:
+        """runtime_bearer 应使用独立运行时凭证，并覆盖固定 Authorization 请求头。"""
+        request = MCPToolUpsertRequest(
+            name="query_order",
+            platform_ids=[1],
+            api_url="http://business.test/orders",
+            static_headers={"Authorization": "Bearer unsafe-static-token"},
+            auth_type="runtime_bearer",
+        )
+        tool_view = MCPToolView(**request.model_dump(), input_schema=request.build_input_schema())
+        captured_request: dict = {}
+
+        async def capture_request(_client, **request_kwargs):
+            """捕获执行器最终发送给业务 API 的请求头。"""
+            captured_request.update(request_kwargs)
+            return httpx.Response(
+                status_code=200,
+                json={"ok": True},
+                request=httpx.Request(request_kwargs["method"], request_kwargs["url"]),
+            )
+
+        with patch.object(httpx.AsyncClient, "request", new=capture_request):
+            await HTTPAPIToolExecutor().execute(
+                tool_view,
+                {},
+                runtime_credentials={"authorization": "Bearer current-user-token"},
+            )
+
+        self.assertEqual(
+            captured_request["headers"]["Authorization"],
+            "Bearer current-user-token",
+        )
+
+    async def test_runtime_bearer_rejects_missing_runtime_credentials(self) -> None:
+        """runtime_bearer 缺少本次用户 Token 时必须在发出 HTTP 请求前失败。"""
+        request = MCPToolUpsertRequest(
+            name="query_order",
+            platform_ids=[1],
+            api_url="http://business.test/orders",
+            auth_type="runtime_bearer",
+        )
+        tool_view = MCPToolView(**request.model_dump(), input_schema=request.build_input_schema())
+
+        with self.assertRaisesRegex(RuntimeError, "未提供业务平台用户凭证"):
+            await HTTPAPIToolExecutor().execute(tool_view, {}, runtime_credentials={})
 
 
 class FastMCPToolRegistryTestCase(unittest.IsolatedAsyncioTestCase):

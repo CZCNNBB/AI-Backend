@@ -45,10 +45,18 @@
                 <a-tag :color="statusColor(selectedTool.status)">{{ statusText(selectedTool.status) }}</a-tag>
               </a-descriptions-item>
               <a-descriptions-item label="说明">{{ selectedTool.description || '暂无说明' }}</a-descriptions-item>
+              <a-descriptions-item label="所属业务平台">
+                <a-space wrap>
+                  <a-tag v-for="platformId in selectedTool.platform_ids" :key="platformId">
+                    {{ platformName(platformId) }}
+                  </a-tag>
+                </a-space>
+              </a-descriptions-item>
               <a-descriptions-item label="超时">{{ selectedTool.timeout_seconds }} 秒</a-descriptions-item>
             </a-descriptions>
 
             <a-space class="mb-4">
+              <a-button @click="openEditModal">编辑 Tool</a-button>
               <a-button
                 v-if="selectedTool.status !== 'enabled'"
                 type="primary"
@@ -98,7 +106,7 @@
 
     <a-modal
       v-model:open="createModalOpen"
-      title="配置 HTTP API 为 MCP Tool"
+      :title="editingTool ? `编辑 MCP Tool - ${editingTool.name}` : '配置 HTTP API 为 MCP Tool'"
       :confirm-loading="saving"
       width="1000px"
       @ok="onCreateMcpTool"
@@ -107,7 +115,11 @@
         <a-row :gutter="12">
           <a-col :span="12">
             <a-form-item label="MCP Tool 名称" required>
-              <a-input v-model:value="createForm.name" placeholder="例如 search_jobs" />
+              <a-input
+                v-model:value="createForm.name"
+                :disabled="!!editingTool"
+                placeholder="例如 search_jobs"
+              />
             </a-form-item>
           </a-col>
           <a-col :span="6">
@@ -127,6 +139,16 @@
         </a-form-item>
         <a-form-item label="工具描述">
           <a-textarea v-model:value="createForm.description" :rows="2" />
+        </a-form-item>
+        <a-form-item label="所属业务平台" required>
+          <a-select
+            v-model:value="createForm.platform_ids"
+            mode="multiple"
+            placeholder="选择可以配置和使用该工具的业务平台"
+            :options="platformOptions"
+            show-search
+            option-filter-prop="label"
+          />
         </a-form-item>
 
         <a-divider orientation="left">参数映射</a-divider>
@@ -181,6 +203,12 @@
             <a-form-item label="认证配置 JSON">
               <a-textarea v-model:value="authConfigText" :rows="2" placeholder='Bearer：{"token":"..."}' />
             </a-form-item>
+            <a-form-item v-if="createForm.auth_type === 'runtime_bearer'" label="本次测试业务用户 Token">
+              <a-input-password
+                v-model:value="businessAuthorization"
+                placeholder="Bearer xxxxx；只用于本次测试，不保存"
+              />
+            </a-form-item>
           </a-col>
         </a-row>
 
@@ -209,6 +237,7 @@ import { onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import {
   publishMcpTool,
+  invokeMcpTool,
   searchMcpTools,
   testMcpTool,
   upsertMcpTool,
@@ -216,7 +245,7 @@ import {
   type McpToolUpsertRequest,
   type McpToolView,
 } from '@/api/mcp'
-import { invokeAgentTool } from '@/api/tools'
+import { searchBusinessPlatforms } from '@/api/platform'
 
 defineOptions({ name: 'ToolManagerView' })
 
@@ -227,6 +256,7 @@ const running = ref(false)
 const result = ref('')
 const argsJsonText = ref('{}')
 const createModalOpen = ref(false)
+const editingTool = ref<McpToolView | null>(null)
 const saving = ref(false)
 const testingApi = ref(false)
 const testApiResult = ref('')
@@ -234,11 +264,15 @@ const staticHeadersText = ref('{}')
 const authConfigText = ref('{}')
 const testArgsText = ref('{}')
 const testRuntimeInputsText = ref('{}')
+const businessAuthorization = ref('')
+const platformOptions = ref<{ label: string; value: number }[]>([])
+const platformNames = ref<Record<number, string>>({})
 
 const httpMethodOptions = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map((value) => ({ label: value, value }))
 const statusOptions = [
   { label: '草稿（测试后再发布）', value: 'draft' },
   { label: '直接发布', value: 'enabled' },
+  { label: '停用', value: 'disabled' },
 ]
 const sourceOptions = [
   { label: 'Agent 参数', value: 'tool' },
@@ -252,6 +286,7 @@ const authTypeOptions = [
   { label: 'Bearer Token', value: 'bearer' },
   { label: 'Basic Auth', value: 'basic' },
   { label: 'API Key', value: 'api_key' },
+  { label: '运行时 Bearer（业务用户 Token）', value: 'runtime_bearer' },
 ]
 
 const createForm = reactive<McpToolUpsertRequest>(createEmptyForm())
@@ -261,6 +296,7 @@ function createEmptyForm(): McpToolUpsertRequest {
   return {
     name: '',
     description: '',
+    platform_ids: [],
     api_url: '',
     http_method: 'POST',
     static_headers: {},
@@ -288,16 +324,82 @@ async function load() {
   }
 }
 
+/** 加载业务平台选项，供 MCP Tool 建立多对多归属关系。 */
+async function loadPlatforms() {
+  const response = await searchBusinessPlatforms({ page: 1, page_size: 100, status: 'enabled' })
+  platformOptions.value = (response.items || []).map((item) => ({
+    label: `${item.platform_name} (${item.platform_code})`,
+    value: item.id,
+  }))
+  platformNames.value = Object.fromEntries((response.items || []).map((item) => [item.id, item.platform_name]))
+}
+
+/** 返回业务平台 ID 对应的展示名称。 */
+function platformName(platformId: number) {
+  return platformNames.value[platformId] || `平台 ${platformId}`
+}
+
 /** 打开新增 API Tool 弹窗并清理上一次输入。 */
 function openCreateModal() {
+  editingTool.value = null
   Object.assign(createForm, createEmptyForm())
   staticHeadersText.value = '{}'
   authConfigText.value = '{}'
   testArgsText.value = '{}'
   testRuntimeInputsText.value = '{}'
   testApiResult.value = ''
+  businessAuthorization.value = ''
   addParameter()
   createModalOpen.value = true
+}
+
+/** 打开当前 Tool 的编辑窗口，并完整回填 HTTP API 与参数映射配置。 */
+function openEditModal() {
+  if (!selectedTool.value) return
+
+  editingTool.value = selectedTool.value
+  const editableParameters = selectedTool.value.parameters.map((parameter) => ({
+    ...parameter,
+    // 固定对象、数组和布尔值需要转换成表单文本，保存时再按 data_type 解析回来。
+    value: parameter.source === 'static'
+      ? formatStaticValueForForm(parameter.value, parameter.data_type)
+      : parameter.value,
+  }))
+  Object.assign(createForm, {
+    name: selectedTool.value.name,
+    description: selectedTool.value.description || '',
+    platform_ids: [...selectedTool.value.platform_ids],
+    api_url: selectedTool.value.api_url,
+    http_method: selectedTool.value.http_method,
+    static_headers: { ...selectedTool.value.static_headers },
+    parameters: editableParameters,
+    auth_type: selectedTool.value.auth_type,
+    auth_config: { ...selectedTool.value.auth_config },
+    output_schema: selectedTool.value.output_schema
+      ? { ...selectedTool.value.output_schema }
+      : null,
+    timeout_seconds: selectedTool.value.timeout_seconds,
+    status: selectedTool.value.status,
+  })
+  staticHeadersText.value = prettyJson(selectedTool.value.static_headers || {})
+  authConfigText.value = prettyJson(selectedTool.value.auth_config || {})
+  testArgsText.value = prettyJson(buildExampleArgs(selectedTool.value.input_schema || {}))
+  testRuntimeInputsText.value = '{}'
+  testApiResult.value = ''
+  businessAuthorization.value = ''
+  createModalOpen.value = true
+}
+
+/** 把数据库中的固定参数值转换为输入框可编辑的文本格式。 */
+function formatStaticValueForForm(
+  value: any,
+  dataType: McpToolParameter['data_type'],
+): string {
+  if (value === null || value === undefined) return ''
+  if (dataType === 'object' || dataType === 'array') {
+    return JSON.stringify(value)
+  }
+  return String(value)
 }
 
 /** 新增一行默认的 Agent 参数映射。 */
@@ -321,6 +423,9 @@ function removeParameter(index: number) {
 function buildToolPayload(): McpToolUpsertRequest {
   if (!createForm.name.trim() || !createForm.api_url.trim()) {
     throw new Error('请填写 MCP Tool 名称和目标业务 API')
+  }
+  if (!createForm.platform_ids.length) {
+    throw new Error('请至少选择一个所属业务平台')
   }
   const normalizedParameters = createForm.parameters
     .filter((parameter) => parameter.name.trim())
@@ -411,8 +516,9 @@ async function onCreateMcpTool() {
   saving.value = true
   try {
     await upsertMcpTool(buildToolPayload())
-    message.success('API Tool 已保存')
+    message.success(editingTool.value ? 'API Tool 已更新' : 'API Tool 已保存')
     createModalOpen.value = false
+    editingTool.value = null
     await load()
   } catch (error: any) {
     message.error(error?.message || String(error))
@@ -430,7 +536,7 @@ async function onTestApi() {
       tool: buildToolPayload(),
       args: parseJsonObject(testArgsText.value, 'Tool 参数 JSON'),
       runtime_inputs: parseJsonObject(testRuntimeInputsText.value, 'Runtime inputs JSON'),
-    })
+    }, businessAuthorization.value.trim() || undefined)
     testApiResult.value = prettyJson(response)
     message.success(`API 测试成功，HTTP ${response.status_code}，耗时 ${response.elapsed_ms}ms`)
   } catch (error: any) {
@@ -473,7 +579,11 @@ async function onRun() {
   result.value = ''
   try {
     const args = parseJsonObject(argsJsonText.value, '参数 JSON')
-    const response = await invokeAgentTool({ tool_name: selectedTool.value.name, args })
+    const response = await invokeMcpTool(
+      selectedTool.value.name,
+      args,
+      businessAuthorization.value.trim() || undefined,
+    )
     result.value = prettyJson(response)
   } catch (error: any) {
     result.value = `调用失败：${error?.message || error}`
@@ -522,7 +632,9 @@ function prettyJson(value: unknown) {
   return JSON.stringify(value, null, 2)
 }
 
-onMounted(load)
+onMounted(async () => {
+  await Promise.all([loadPlatforms(), load()])
+})
 </script>
 
 <style scoped>

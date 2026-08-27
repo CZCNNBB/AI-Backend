@@ -29,6 +29,8 @@ class AgentContextService:
         self,
         db: Session,
         *,
+        platform_id: int,
+        external_user_id: str,
         conversation_id: str,
         title: str | None = None,
         metadata: dict | None = None,
@@ -45,12 +47,19 @@ class AgentContextService:
         Returns:
             已存在或新创建的会话记录。
         """
-        conversation = self.repository.get_conversation(db, conversation_id)
+        conversation = self.repository.get_conversation(
+            db,
+            platform_id=platform_id,
+            external_user_id=external_user_id,
+            conversation_id=conversation_id,
+        )
         if conversation:
             return self.repository.touch_conversation(db, conversation)
 
         conversation = AgentConversation(
             conversation_id=conversation_id,
+            platform_id=platform_id,
+            external_user_id=external_user_id,
             title=title,
             extra_metadata=metadata or {},
         )
@@ -302,7 +311,15 @@ class AgentContextService:
             ),
         )
 
-    def get_recent_messages(self, db: Session, *, conversation_id: str, limit: int = 20) -> list[ContextMessageView]:
+    def get_recent_messages(
+        self,
+        db: Session,
+        *,
+        platform_id: int,
+        external_user_id: str,
+        conversation_id: str,
+        limit: int = 20,
+    ) -> list[ContextMessageView]:
         """
         查询最近历史消息。
 
@@ -314,7 +331,13 @@ class AgentContextService:
         Returns:
             历史消息视图列表。
         """
-        messages = self.repository.list_recent_messages(db, conversation_id, limit)
+        messages = self.repository.list_recent_messages(
+            db,
+            platform_id=platform_id,
+            external_user_id=external_user_id,
+            conversation_id=conversation_id,
+            limit=limit,
+        )
         return [
             ContextMessageView(
                 message_id=message.message_id,
@@ -331,7 +354,13 @@ class AgentContextService:
             for message in messages
         ]
 
-    def search_conversations(self, db: Session, request: AgentConversationSearchRequest) -> AgentConversationSearchResponse:
+    def search_conversations(
+        self,
+        db: Session,
+        *,
+        platform_id: int,
+        request: AgentConversationSearchRequest,
+    ) -> AgentConversationSearchResponse:
         """
         分页查询 Agent 会话列表。
 
@@ -344,12 +373,17 @@ class AgentContextService:
         """
         rows, total = self.repository.list_conversations(
             db,
+            platform_id=platform_id,
+            external_user_id=request.external_user_id,
             conversation_id=request.conversation_id,
+            page=request.page,
+            page_size=request.page_size,
         )
 
         items = [
             AgentConversationView(
                 conversation_id=row.conversation_id,
+                external_user_id=row.external_user_id,
                 title=row.title,
                 status=row.status,
                 metadata=row.extra_metadata,
@@ -361,6 +395,7 @@ class AgentContextService:
 
         return AgentConversationSearchResponse(
             total=total,
+            page=request.page,
+            page_size=request.page_size,
             items=items,
         )
-

@@ -98,6 +98,17 @@ class AgentA2AConfig(BaseModel):
     )
 
 
+class AgentRuntimeCredentials(BaseModel):
+    """仅在本次 Agent 执行期间使用的敏感业务凭证。"""
+
+    authorization: str | None = Field(
+        default=None,
+        exclude=True,
+        repr=False,
+        description="透传给 runtime_bearer MCP Tool 的完整 Authorization 值",
+    )
+
+
 class AgentRunRequest(BaseModel):
     """通用 Agent 底层运行请求模型。
 
@@ -114,6 +125,14 @@ class AgentRunRequest(BaseModel):
         default=None,
         max_length=100,
         description="可选 Agent 模板 ID；传入后后端会自动加载模板配置，并以模板中的核心配置为主。",
+    )
+    platform_id: int | None = Field(default=None, description="可信平台身份，由 API Key 认证依赖注入")
+    external_user_id: str | None = Field(default=None, max_length=150, description="外部业务平台用户标识")
+    runtime_credentials: AgentRuntimeCredentials = Field(
+        default_factory=AgentRuntimeCredentials,
+        exclude=True,
+        repr=False,
+        description="本次执行使用的敏感运行时凭证，不进入持久化配置",
     )
     query: str = Field(..., min_length=1, description="用户输入或编排层传入的任务指令。")
     conversation_id: str | None = Field(
@@ -146,7 +165,7 @@ class AgentRunRequest(BaseModel):
         description="模型运行参数，必须包含可用 chat 模型的 model_code。",
     )
 
-    @field_validator("agent_id")
+    @field_validator("agent_id", "external_user_id")
     @classmethod
     def normalize_agent_id(cls, value: str | None) -> str | None:
         """清理 Agent 模板 ID 两侧空白，空字符串视为未传。"""
@@ -164,10 +183,17 @@ class AgentMessageRequest(BaseModel):
     自动判断是否存在 interrupted 状态的运行，并路由到 run 或 resume。
     """
 
-    agent_id: str | None = Field(
-        default=None,
+    agent_id: str = Field(
+        ...,
+        min_length=1,
         max_length=100,
-        description="可选 Agent 模板 ID；新任务时用于加载模板配置，中断恢复时以原 run 记录为准。",
+        description="必须提供的 Agent 模板 ID；中断恢复时仍会校验原运行归属。",
+    )
+    external_user_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=150,
+        description="业务平台中的稳定用户 ID，用于隔离会话、消息和运行记录",
     )
     conversation_id: str | None = Field(
         default=None,
@@ -204,7 +230,7 @@ class AgentMessageRequest(BaseModel):
         description="新任务运行时的模型参数。",
     )
 
-    @field_validator("agent_id", "conversation_id")
+    @field_validator("conversation_id")
     @classmethod
     def normalize_optional_id(cls, value: str | None) -> str | None:
         """清理可选 ID 两侧空白，空字符串视为未传。"""
@@ -212,6 +238,15 @@ class AgentMessageRequest(BaseModel):
             return None
         stripped = value.strip()
         return stripped or None
+
+    @field_validator("agent_id", "external_user_id")
+    @classmethod
+    def normalize_required_identity(cls, value: str) -> str:
+        """清理必填 Agent 和用户标识，并拒绝只包含空白字符的输入。"""
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("必填身份标识不能为空")
+        return stripped
 
     @field_validator("message_type")
     @classmethod
@@ -235,14 +270,23 @@ class AgentResumeRequest(BaseModel):
     """
 
     run_id: str = Field(..., min_length=1, description="被中断的 Agent 运行 ID。")
-    thread_id: str = Field(..., min_length=1, description="LangGraph checkpoint 线程 ID，必须使用中断事件返回的 thread_id。")
+    conversation_id: str = Field(..., min_length=1, description="用户可见的业务会话 ID。")
+    thread_id: str = Field(..., min_length=1, description="AI-backend 内部生成的 LangGraph checkpoint 线程 ID。")
+    platform_id: int = Field(..., description="可信业务平台 ID。")
+    external_user_id: str = Field(..., min_length=1, max_length=150, description="外部业务平台用户 ID。")
+    runtime_credentials: AgentRuntimeCredentials = Field(
+        default_factory=AgentRuntimeCredentials,
+        exclude=True,
+        repr=False,
+        description="恢复执行本次请求携带的敏感业务凭证。",
+    )
     resume_value: dict[str, Any] = Field(
         ...,
         description="恢复值，固定外层格式为 {type: string, data: object}。",
     )
     stream: bool = Field(default=True, description="是否使用 SSE 流式返回恢复后的事件。")
 
-    @field_validator("run_id", "thread_id")
+    @field_validator("run_id", "thread_id", "conversation_id", "external_user_id")
     @classmethod
     def normalize_required_id(cls, value: str) -> str:
         """清理必填 ID 两侧空白。"""

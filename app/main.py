@@ -20,6 +20,7 @@ from app.server.file.api import router as file_router
 from app.server.fastmcp.api import router as fastmcp_router
 from app.server.fastmcp.src.server import fastmcp_http_app, fastmcp_registry
 from app.server.knowledge.api import router as knowledge_router
+from app.server.platform.api import router as platform_router
 
 
 @asynccontextmanager
@@ -41,6 +42,7 @@ def create_app() -> FastAPI:
     app.include_router(file_router, tags=["file service"])
     app.include_router(knowledge_router, tags=["knowledge service"])
     app.include_router(fastmcp_router, prefix="/fastmcp", tags=["mcp platform"])
+    app.include_router(platform_router, prefix="/platform", tags=["business platform"])
 
     # MCP 协议流量统一进入 /mcp；管理接口继续使用 /fastmcp/tools/*。
     app.mount("/mcp", fastmcp_http_app, name="fastmcp-protocol")

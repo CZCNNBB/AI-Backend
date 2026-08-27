@@ -32,5 +32,6 @@ class AgentRunResponse(BaseModel):
     """通用 Agent 运行响应模型。"""
 
     run_id: str = Field(default="", description="Agent 本次运行 ID")
+    conversation_id: str = Field(default="", description="AI-backend 生成或沿用的业务会话 ID")
     answer: str = Field(default="", description="Agent 输出文本")
     tool_results: list[dict[str, Any]] = Field(default_factory=list, description="本次实际完成的工具执行结果")

@@ -1,13 +1,21 @@
 import json
 import logging
 from typing import TYPE_CHECKING, AsyncIterator, Literal
+from uuid import uuid4
 
 from sqlmodel import Session
 
 from app.common.db.postgres_db import postgres_transaction
 from app.server.agent.src.runs import AgentRun, AgentRunService
-from app.server.agent.src.schemas.request import AgentMessageRequest, AgentResumeRequest, AgentRunRequest
+from app.server.agent.src.schemas.request import (
+    AgentMessageRequest,
+    AgentResumeRequest,
+    AgentRunRequest,
+    AgentRuntimeCredentials,
+)
 from app.server.agent.src.schemas.response import AgentRunResponse
+from app.server.platform.src.schemas import PlatformPrincipal
+from app.server.platform.src.service import BusinessPlatformService
 
 if TYPE_CHECKING:
     from app.server.agent.src.agent.service import AgentService
@@ -27,7 +35,13 @@ class AgentMessageService:
     这样前端只需要提交“用户消息”，不用关心底层是 run 还是 resume。
     """
 
-    def __init__(self, *, agent_service: "AgentService", run_service: AgentRunService | None = None):
+    def __init__(
+        self,
+        *,
+        agent_service: "AgentService",
+        run_service: AgentRunService | None = None,
+        platform_service: BusinessPlatformService | None = None,
+    ):
         """初始化统一消息入口服务。
 
         Args:
@@ -36,8 +50,15 @@ class AgentMessageService:
         """
         self.agent_service = agent_service
         self.run_service = run_service or AgentRunService()
+        self.platform_service = platform_service or BusinessPlatformService()
 
-    async def run_message(self, request: AgentMessageRequest) -> AgentRunResponse:
+    async def run_message(
+        self,
+        request: AgentMessageRequest,
+        *,
+        principal: PlatformPrincipal,
+        business_authorization: str | None,
+    ) -> AgentRunResponse:
         """处理非流式统一消息请求。
 
         Args:
@@ -45,7 +66,12 @@ class AgentMessageService:
         Returns:
             AgentRunResponse。新任务返回新 run_id；中断恢复返回原 run_id。
         """
-        route_type, routed_request = self._route_message_with_short_session(request, stream=False)
+        route_type, routed_request = self._route_message_with_short_session(
+            request,
+            principal=principal,
+            business_authorization=business_authorization,
+            stream=False,
+        )
         if route_type == "resume":
             return await self.agent_service.resume(routed_request)
         return await self.agent_service.run(routed_request)
@@ -53,6 +79,9 @@ class AgentMessageService:
     async def stream_message(
         self,
         request: AgentMessageRequest,
+        *,
+        principal: PlatformPrincipal,
+        business_authorization: str | None,
     ) -> AsyncIterator[dict[str, object]]:
         """处理流式统一消息请求。
 
@@ -61,7 +90,12 @@ class AgentMessageService:
         Yields:
             标准化 Agent 流式事件。
         """
-        route_type, routed_request = self._route_message_with_short_session(request, stream=True)
+        route_type, routed_request = self._route_message_with_short_session(
+            request,
+            principal=principal,
+            business_authorization=business_authorization,
+            stream=True,
+        )
         if route_type == "resume":
             async for event in self.agent_service.resume_stream(routed_request):
                 yield event
@@ -74,6 +108,8 @@ class AgentMessageService:
         self,
         request: AgentMessageRequest,
         *,
+        principal: PlatformPrincipal,
+        business_authorization: str | None,
         stream: bool,
     ) -> MessageRoute:
         """使用短事务判断本次消息应创建新运行还是恢复中断运行。
@@ -88,9 +124,23 @@ class AgentMessageService:
         # 路由阶段只查询一次 agent_runs。必须在 with 块内完成请求对象构建，
         # 避免把仍绑定 Session 的 ORM 对象带到后续 SSE 生成器中。
         with postgres_transaction() as route_db:
-            return self._route_message(request, route_db, stream=stream)
+            return self._route_message(
+                request,
+                route_db,
+                principal=principal,
+                business_authorization=business_authorization,
+                stream=stream,
+            )
 
-    def _route_message(self, request: AgentMessageRequest, db: Session, *, stream: bool) -> MessageRoute:
+    def _route_message(
+        self,
+        request: AgentMessageRequest,
+        db: Session,
+        *,
+        principal: PlatformPrincipal,
+        business_authorization: str | None,
+        stream: bool,
+    ) -> MessageRoute:
         """判断统一消息应该创建新运行还是恢复中断运行。
 
         Args:
@@ -101,12 +151,28 @@ class AgentMessageService:
         Returns:
             二元组：(run/resume, 对应的底层请求对象)。
         """
-        pending_run = self._find_pending_interrupted_run(request, db)
+        self.platform_service.require_agent_binding(
+            db,
+            agent_id=request.agent_id,
+            platform_id=principal.platform_id,
+        )
+        pending_run = self._find_pending_interrupted_run(request, db, principal=principal)
         if pending_run is not None:
-            resume_request = self._build_resume_request(request, pending_run, stream=stream)
+            resume_request = self._build_resume_request(
+                request,
+                pending_run,
+                principal=principal,
+                business_authorization=business_authorization,
+                stream=stream,
+            )
             return "resume", resume_request
 
-        run_request = self._build_run_request(request, stream=stream)
+        run_request = self._build_run_request(
+            request,
+            principal=principal,
+            business_authorization=business_authorization,
+            stream=stream,
+        )
         logger.info(
             "统一消息入口路由到新运行: conversation_id=%s agent_id=%s message_type=%s stream=%s",
             request.conversation_id,
@@ -116,7 +182,13 @@ class AgentMessageService:
         )
         return "run", run_request
 
-    def _find_pending_interrupted_run(self, request: AgentMessageRequest, db: Session) -> AgentRun | None:
+    def _find_pending_interrupted_run(
+        self,
+        request: AgentMessageRequest,
+        db: Session,
+        *,
+        principal: PlatformPrincipal,
+    ) -> AgentRun | None:
         """根据 conversation_id 查询是否存在待恢复运行。
 
         Args:
@@ -128,9 +200,21 @@ class AgentMessageService:
         """
         if not request.conversation_id:
             return None
-        return self.run_service.get_latest_interrupted_by_conversation(db, request.conversation_id)
+        return self.run_service.get_latest_interrupted_by_conversation(
+            db,
+            platform_id=principal.platform_id,
+            external_user_id=request.external_user_id,
+            conversation_id=request.conversation_id,
+        )
 
-    def _build_run_request(self, request: AgentMessageRequest, *, stream: bool) -> AgentRunRequest:
+    def _build_run_request(
+        self,
+        request: AgentMessageRequest,
+        *,
+        principal: PlatformPrincipal,
+        business_authorization: str | None,
+        stream: bool,
+    ) -> AgentRunRequest:
         """把统一消息请求转换为普通 Agent 运行请求。
 
         Args:
@@ -140,10 +224,14 @@ class AgentMessageService:
         Returns:
             AgentRunRequest。
         """
+        conversation_id = request.conversation_id or f"conv_{uuid4().hex}"
         return AgentRunRequest(
             agent_id=request.agent_id,
+            platform_id=principal.platform_id,
+            external_user_id=request.external_user_id,
+            runtime_credentials=AgentRuntimeCredentials(authorization=business_authorization),
             query=self._build_query_text(request),
-            conversation_id=request.conversation_id,
+            conversation_id=conversation_id,
             stream=stream,
             system_prompt=request.system_prompt,
             inputs=self._build_run_inputs(request),
@@ -155,7 +243,15 @@ class AgentMessageService:
             runtime_options=request.runtime_options,
         )
 
-    def _build_resume_request(self, request: AgentMessageRequest, pending_run: AgentRun, *, stream: bool) -> AgentResumeRequest:
+    def _build_resume_request(
+        self,
+        request: AgentMessageRequest,
+        pending_run: AgentRun,
+        *,
+        principal: PlatformPrincipal,
+        business_authorization: str | None,
+        stream: bool,
+    ) -> AgentResumeRequest:
         """把统一消息请求转换为中断恢复请求。
 
         Args:
@@ -166,13 +262,22 @@ class AgentMessageService:
         Returns:
             AgentResumeRequest。
         """
-        thread_id = pending_run.conversation_id or request.conversation_id
-        if not thread_id:
+        conversation_id = pending_run.conversation_id or request.conversation_id
+        if not conversation_id:
             raise RuntimeError("中断恢复缺少 conversation_id/thread_id")
+        checkpoint_thread_id = (
+            f"platform:{principal.platform_id}:"
+            f"user:{request.external_user_id}:"
+            f"conversation:{conversation_id}"
+        )
 
         return AgentResumeRequest(
             run_id=pending_run.run_id,
-            thread_id=thread_id,
+            conversation_id=conversation_id,
+            thread_id=checkpoint_thread_id,
+            platform_id=principal.platform_id,
+            external_user_id=request.external_user_id,
+            runtime_credentials=AgentRuntimeCredentials(authorization=business_authorization),
             resume_value=self._build_resume_value(request, pending_run),
             stream=stream,
         )

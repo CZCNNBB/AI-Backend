@@ -166,9 +166,14 @@ class AgentRunLifecycleService:
         run_record_enabled = db is not None
         user_message_id: str | None = None
 
+        if db is not None and (request.platform_id is None or not request.external_user_id):
+            raise RuntimeError("持久化 Agent 运行缺少 platform_id 或 external_user_id")
+
         if context_enabled:
             self.context_service.ensure_conversation(
                 db,
+                platform_id=request.platform_id,
+                external_user_id=request.external_user_id,
                 conversation_id=context.thread_id,
                 title=self.build_conversation_title(request.query),
                 metadata={},
@@ -185,6 +190,8 @@ class AgentRunLifecycleService:
             self.run_service.create_running(
                 db,
                 run_id=context.run_id,
+                platform_id=request.platform_id,
+                external_user_id=request.external_user_id,
                 run_type="main",
                 conversation_id=context.thread_id if request.conversation_id else None,
                 user_message_id=user_message_id,

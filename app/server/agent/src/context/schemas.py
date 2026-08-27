@@ -6,12 +6,16 @@ from pydantic import BaseModel, Field
 class AgentConversationSearchRequest(BaseModel):
     """查询 Agent 会话列表的请求参数。"""
 
-    conversation_id: str = Field(..., min_length=1, description="会话 ID，精确匹配")
+    external_user_id: str = Field(..., min_length=1, max_length=150, description="外部业务用户 ID")
+    conversation_id: str | None = Field(default=None, description="可选会话 ID，传入时精确匹配")
+    page: int = Field(default=1, ge=1, description="页码")
+    page_size: int = Field(default=20, ge=1, le=100, description="每页数量")
 
 
 class AgentConversationMessagesRequest(BaseModel):
     """查询某个 Agent 会话消息列表的请求参数。"""
 
+    external_user_id: str = Field(..., min_length=1, max_length=150, description="外部业务用户 ID")
     conversation_id: str = Field(..., min_length=1, description="会话 ID")
     limit: int = Field(default=50, ge=1, le=200, description="最多返回多少条最近消息")
 
@@ -20,6 +24,7 @@ class AgentConversationView(BaseModel):
     """返回给接口调用方的 Agent 会话视图。"""
 
     conversation_id: str = Field(..., description="会话 ID")
+    external_user_id: str = Field(..., description="外部业务用户 ID")
     title: str | None = Field(default=None, description="会话标题")
     status: str = Field(default="active", description="会话状态")
     metadata: dict[str, Any] = Field(default_factory=dict, description="会话扩展元数据")
@@ -31,6 +36,8 @@ class AgentConversationSearchResponse(BaseModel):
     """Agent 会话分页查询响应。"""
 
     total: int = Field(default=0, description="总数量")
+    page: int = Field(default=1, description="页码")
+    page_size: int = Field(default=20, description="每页数量")
     items: list[AgentConversationView] = Field(default_factory=list, description="会话列表")
 
 

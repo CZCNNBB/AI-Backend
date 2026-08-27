@@ -59,6 +59,11 @@ class AgentTemplateUpsertRequest(BaseModel):
     agent_id: str = Field(..., min_length=1, max_length=100, description="Agent 稳定业务 ID")
     agent_name: str = Field(..., min_length=1, max_length=255, description="Agent 展示名称")
     description: str | None = Field(default=None, description="Agent 模板描述")
+    platform_ids: list[int] = Field(
+        ...,
+        min_length=1,
+        description="Agent 绑定的业务平台 ID；一个 Agent 可以绑定多个平台",
+    )
     config: AgentTemplateConfig = Field(default_factory=AgentTemplateConfig, description="Agent 模板配置")
     status: str = Field(default="active", max_length=30, description="模板状态，例如 active、disabled")
 
@@ -84,6 +89,7 @@ class AgentTemplateView(BaseModel):
     agent_id: str = Field(..., description="Agent 稳定业务 ID")
     agent_name: str = Field(..., description="Agent 展示名称")
     description: str | None = Field(default=None, description="Agent 模板描述")
+    platform_ids: list[int] = Field(default_factory=list, description="Agent 绑定的业务平台 ID")
     config: AgentTemplateConfig = Field(default_factory=AgentTemplateConfig, description="Agent 模板配置")
     status: str = Field(default="active", description="模板状态")
     created_at: str | None = Field(default=None, description="创建时间")

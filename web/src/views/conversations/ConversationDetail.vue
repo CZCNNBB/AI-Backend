@@ -8,6 +8,14 @@
       💬 会话详情 - <span class="text-gray-500 text-sm">{{ conversationId }}</span>
     </h2>
 
+    <a-alert
+      v-if="!debugContextReady"
+      message="请先在页面顶部配置平台 API Key 和外部用户 ID。"
+      type="info"
+      show-icon
+      class="mb-4"
+    />
+
     <a-card class="mb-4">
       <a-space>
         <span><b>状态：</b>{{ conversation?.status || '-' }}</span>
@@ -77,7 +85,7 @@
  * 会话详情页逻辑
  * - 加载会话元信息 + 消息列表 + 该会话的运行记录
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   searchConversations,
@@ -87,6 +95,10 @@ import {
 } from '@/api/conversation'
 import { searchAgentRuns, type AgentRun } from '@/api/agentRun'
 import dayjs from 'dayjs'
+import {
+  BUSINESS_DEBUG_CONTEXT_CHANGED,
+  hasCompleteBusinessDebugContext,
+} from '@/utils/businessDebugContext'
 
 defineOptions({ name: 'ConversationDetailView' })
 
@@ -101,6 +113,7 @@ const messages = ref<ConversationMessage[]>([])
 const runs = ref<AgentRun[]>([])
 const loading = ref(false)
 const loadingRuns = ref(false)
+const debugContextReady = ref(hasCompleteBusinessDebugContext())
 
 const runColumns = [
   { title: 'Run ID', dataIndex: 'run_id', width: 220, ellipsis: true },
@@ -115,6 +128,11 @@ const runColumns = [
 
 /** 加载元信息 + 消息 */
 async function loadMessages() {
+  if (!hasCompleteBusinessDebugContext()) {
+    conversation.value = null
+    messages.value = []
+    return
+  }
   loading.value = true
   try {
     try {
@@ -134,6 +152,10 @@ async function loadMessages() {
 
 /** 加载运行记录 */
 async function loadRuns() {
+  if (!hasCompleteBusinessDebugContext()) {
+    runs.value = []
+    return
+  }
   loadingRuns.value = true
   try {
     const res = await searchAgentRuns({
@@ -163,10 +185,18 @@ function formatTime(t?: string) {
   return t ? dayjs(t).format('YYYY-MM-DD HH:mm:ss') : '-'
 }
 
+/** 调试身份变化后重新加载当前会话的数据。 */
+function onDebugContextChanged(): void {
+  debugContextReady.value = hasCompleteBusinessDebugContext()
+  void loadMessages()
+  void loadRuns()
+}
+
 onMounted(() => {
-  loadMessages()
-  loadRuns()
+  window.addEventListener(BUSINESS_DEBUG_CONTEXT_CHANGED, onDebugContextChanged)
+  onDebugContextChanged()
 })
+onBeforeUnmount(() => window.removeEventListener(BUSINESS_DEBUG_CONTEXT_CHANGED, onDebugContextChanged))
 </script>
 
 <style scoped>

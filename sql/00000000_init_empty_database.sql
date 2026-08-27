@@ -15,9 +15,11 @@
 
 BEGIN;
 
--- Agent、文件服务共用 agent Schema；知识库表放在 knowledge Schema。
+-- Agent、文件服务共用 agent Schema；业务平台、MCP 和知识库各自使用独立 Schema。
 CREATE SCHEMA IF NOT EXISTS agent;
 CREATE SCHEMA IF NOT EXISTS knowledge;
+CREATE SCHEMA IF NOT EXISTS mcp;
+CREATE SCHEMA IF NOT EXISTS platform;
 
 -- =====================================================================
 -- 1. 平台模型配置
@@ -59,7 +61,44 @@ COMMENT ON COLUMN public.model_configs.api_key IS '模型服务密钥；生产�
 COMMENT ON COLUMN public.model_configs.extra_config IS '模型供应商特有的扩展配置。';
 
 -- =====================================================================
--- 2. Agent 模板、会话与消息
+-- 2. 业务平台与平台 API Key
+-- =====================================================================
+
+CREATE TABLE IF NOT EXISTS platform.business_platforms (
+    id BIGSERIAL PRIMARY KEY,
+    platform_code VARCHAR(100) NOT NULL UNIQUE,
+    platform_name VARCHAR(200) NOT NULL,
+    description TEXT,
+    status VARCHAR(30) NOT NULL DEFAULT 'enabled',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT ck_business_platforms_status CHECK (status IN ('enabled', 'disabled'))
+);
+
+CREATE TABLE IF NOT EXISTS platform.business_platform_api_keys (
+    id BIGSERIAL PRIMARY KEY,
+    platform_id BIGINT NOT NULL REFERENCES platform.business_platforms(id) ON DELETE CASCADE,
+    key_name VARCHAR(100) NOT NULL DEFAULT 'default',
+    key_prefix VARCHAR(30) NOT NULL,
+    api_key VARCHAR(255) NOT NULL,
+    key_hash VARCHAR(64) NOT NULL UNIQUE,
+    status VARCHAR(30) NOT NULL DEFAULT 'enabled',
+    expires_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_platform_api_keys_name UNIQUE (platform_id, key_name),
+    CONSTRAINT ck_platform_api_keys_status CHECK (status IN ('enabled', 'disabled'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_platform_api_keys_platform_id
+ON platform.business_platform_api_keys(platform_id);
+
+COMMENT ON TABLE platform.business_platforms IS '接入 AI-backend 的外部业务平台。';
+COMMENT ON TABLE platform.business_platform_api_keys IS 'AI-backend 签发的平台调用凭证，内网模式保存明文并同时保留鉴权哈希。';
+COMMENT ON COLUMN platform.business_platform_api_keys.api_key IS '内网管理调试使用的完整 API Key，请勿写入日志。';
+
+-- =====================================================================
+-- 3. Agent 模板、会话与消息
 -- =====================================================================
 
 CREATE TABLE IF NOT EXISTS agent.agent_templates (
@@ -87,6 +126,8 @@ COMMENT ON COLUMN agent.agent_templates.status IS '模板状态，例如 active�
 CREATE TABLE IF NOT EXISTS agent.agent_conversations (
     id BIGSERIAL PRIMARY KEY,
     conversation_id VARCHAR(100) NOT NULL UNIQUE,
+    platform_id BIGINT NOT NULL REFERENCES platform.business_platforms(id),
+    external_user_id VARCHAR(150) NOT NULL,
     title VARCHAR(255),
     status VARCHAR(30) NOT NULL DEFAULT 'active',
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -100,8 +141,16 @@ ON agent.agent_conversations(status);
 CREATE INDEX IF NOT EXISTS idx_agent_conversations_updated_at
 ON agent.agent_conversations(updated_at);
 
+CREATE INDEX IF NOT EXISTS idx_agent_conversations_platform_user
+ON agent.agent_conversations(platform_id, external_user_id, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_agent_conversations_owner
+ON agent.agent_conversations(platform_id, external_user_id, conversation_id);
+
 COMMENT ON TABLE agent.agent_conversations IS 'Agent 会话主表：记录一个 conversation_id 对应的一组历史消息。';
 COMMENT ON COLUMN agent.agent_conversations.conversation_id IS '会话唯一标识。';
+COMMENT ON COLUMN agent.agent_conversations.platform_id IS '会话所属业务平台。';
+COMMENT ON COLUMN agent.agent_conversations.external_user_id IS '业务平台中的稳定用户 ID。';
 COMMENT ON COLUMN agent.agent_conversations.metadata IS '会话扩展元数据。';
 
 CREATE TABLE IF NOT EXISTS agent.agent_messages (
@@ -143,11 +192,13 @@ COMMENT ON COLUMN agent.agent_messages.structured_content IS '结构化消息内
 COMMENT ON COLUMN agent.agent_messages.metadata IS '消息扩展元数据。';
 
 -- =====================================================================
--- 3. Agent 运行记录与 MCP 工具配置
+-- 4. Agent 运行记录与 MCP 工具配置
 -- =====================================================================
 
 CREATE TABLE IF NOT EXISTS agent.agent_runs (
     run_id VARCHAR(100) PRIMARY KEY,
+    platform_id BIGINT NOT NULL REFERENCES platform.business_platforms(id),
+    external_user_id VARCHAR(150) NOT NULL,
     run_type VARCHAR(30) NOT NULL DEFAULT 'main',
     parent_run_id VARCHAR(100),
     agent_id VARCHAR(100),
@@ -188,6 +239,9 @@ ON agent.agent_runs(status);
 CREATE INDEX IF NOT EXISTS idx_agent_runs_started_at
 ON agent.agent_runs(started_at);
 
+CREATE INDEX IF NOT EXISTS idx_agent_runs_platform_user
+ON agent.agent_runs(platform_id, external_user_id, started_at DESC);
+
 COMMENT ON TABLE agent.agent_runs IS 'Agent 运行记录表：统一记录主 Agent 和 A2A 子 Agent 的业务运行台账。';
 COMMENT ON COLUMN agent.agent_runs.run_id IS '本次 Agent 运行 ID，同时作为主键。';
 COMMENT ON COLUMN agent.agent_runs.run_type IS '运行类型：main 表示主 Agent，sub 表示 A2A 子 Agent。';
@@ -195,8 +249,6 @@ COMMENT ON COLUMN agent.agent_runs.parent_run_id IS '父级 Agent 运行 ID；�
 COMMENT ON COLUMN agent.agent_runs.status IS '运行状态，例如 running、success、failed、interrupted。';
 COMMENT ON COLUMN agent.agent_runs.elapsed_ms IS '运行耗时，单位毫秒。';
 COMMENT ON COLUMN agent.agent_runs.metadata IS '运行扩展元数据。';
-
-CREATE SCHEMA IF NOT EXISTS mcp;
 
 CREATE TABLE IF NOT EXISTS mcp.mcp_tools (
     id BIGSERIAL PRIMARY KEY,
@@ -215,7 +267,7 @@ CREATE TABLE IF NOT EXISTS mcp.mcp_tools (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT ck_mcp_tools_http_method CHECK (http_method IN ('GET', 'POST', 'PUT', 'PATCH', 'DELETE')),
-    CONSTRAINT ck_mcp_tools_auth_type CHECK (auth_type IN ('none', 'bearer', 'basic', 'api_key')),
+    CONSTRAINT ck_mcp_tools_auth_type CHECK (auth_type IN ('none', 'bearer', 'basic', 'api_key', 'runtime_bearer')),
     CONSTRAINT ck_mcp_tools_status CHECK (status IN ('draft', 'enabled', 'disabled')),
     CONSTRAINT ck_mcp_tools_timeout CHECK (timeout_seconds > 0 AND timeout_seconds <= 600)
 );
@@ -237,8 +289,31 @@ COMMENT ON COLUMN mcp.mcp_tools.auth_config IS '目标 API 认证配置。';
 COMMENT ON COLUMN mcp.mcp_tools.input_schema IS '平台自动生成的 MCP Tool 输入 JSON Schema。';
 COMMENT ON COLUMN mcp.mcp_tools.output_schema IS '工具输出参数 JSON Schema。';
 
+CREATE TABLE IF NOT EXISTS platform.business_platform_agents (
+    platform_id BIGINT NOT NULL REFERENCES platform.business_platforms(id) ON DELETE CASCADE,
+    agent_template_id BIGINT NOT NULL REFERENCES agent.agent_templates(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (platform_id, agent_template_id)
+);
+
+CREATE TABLE IF NOT EXISTS platform.business_platform_mcp_tools (
+    platform_id BIGINT NOT NULL REFERENCES platform.business_platforms(id) ON DELETE CASCADE,
+    mcp_tool_id BIGINT NOT NULL REFERENCES mcp.mcp_tools(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (platform_id, mcp_tool_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_platform_agents_agent_id
+ON platform.business_platform_agents(agent_template_id);
+
+CREATE INDEX IF NOT EXISTS idx_platform_mcp_tools_tool_id
+ON platform.business_platform_mcp_tools(mcp_tool_id);
+
+COMMENT ON TABLE platform.business_platform_agents IS '业务平台与 Agent 模板的多对多绑定。';
+COMMENT ON TABLE platform.business_platform_mcp_tools IS '业务平台与 MCP Tool 的多对多绑定。';
+
 -- =====================================================================
--- 4. 文件服务
+-- 5. 文件服务
 -- =====================================================================
 
 CREATE TABLE IF NOT EXISTS agent.uploaded_files (
@@ -278,7 +353,7 @@ COMMENT ON COLUMN agent.uploaded_files.conversion_status IS '转换状态：pend
 COMMENT ON COLUMN agent.uploaded_files.metadata IS '文件扩展元数据。';
 
 -- =====================================================================
--- 5. 知识库
+-- 6. 知识库
 -- =====================================================================
 
 CREATE TABLE IF NOT EXISTS knowledge.knowledge_bases (

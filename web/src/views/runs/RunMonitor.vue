@@ -8,6 +8,15 @@
   <div>
     <h2 class="page-title">📈 Agent 运行监控</h2>
 
+    <a-alert
+      v-if="!debugContextReady"
+      type="info"
+      show-icon
+      class="mb-4"
+      message="请先配置调试业务身份"
+      description="运行记录按平台 API Key 和外部用户 ID 隔离，请在页面顶部完成配置。"
+    />
+
     <!-- 顶部统计 -->
     <a-row :gutter="16" class="mb-4">
       <a-col :span="6"><a-card><a-statistic title="今日运行" :value="stats.today" /></a-card></a-col>
@@ -183,17 +192,22 @@
  * - 多条件筛选
  * - 表格内嵌主子链路展开（Tree）
  */
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { FilterOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import { searchAgentRuns, getAgentRunChain, type AgentRun, type AgentRunChain } from '@/api/agentRun'
 import { searchAgentTemplates } from '@/api/agentTemplate'
 import dayjs, { type Dayjs } from 'dayjs'
+import {
+  BUSINESS_DEBUG_CONTEXT_CHANGED,
+  hasCompleteBusinessDebugContext,
+} from '@/utils/businessDebugContext'
 
 defineOptions({ name: 'RunMonitorView' })
 
 const router = useRouter()
 const loading = ref(false)
+const debugContextReady = ref(hasCompleteBusinessDebugContext())
 const list = ref<AgentRun[]>([])
 
 // 链路
@@ -322,6 +336,16 @@ function removeFilterChip(key: string) {
 
 /** 加载列表 */
 async function loadList() {
+  debugContextReady.value = hasCompleteBusinessDebugContext()
+  if (!debugContextReady.value) {
+    list.value = []
+    pagination.total = 0
+    stats.today = 0
+    stats.failed = 0
+    stats.successRate = 0
+    stats.avgElapsedRaw = 0
+    return
+  }
   loading.value = true
   try {
     const res = await searchAgentRuns({
@@ -451,9 +475,11 @@ async function loadAgentOptions() {
 }
 
 onMounted(() => {
-  loadList()
-  loadAgentOptions()
+  window.addEventListener(BUSINESS_DEBUG_CONTEXT_CHANGED, loadList)
+  void loadList()
+  void loadAgentOptions()
 })
+onBeforeUnmount(() => window.removeEventListener(BUSINESS_DEBUG_CONTEXT_CHANGED, loadList))
 </script>
 
 <style scoped>

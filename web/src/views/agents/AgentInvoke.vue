@@ -48,6 +48,34 @@
       </div>
     </div>
 
+    <div class="credential-bar">
+      <a-select
+        v-model:value="selectedPlatformId"
+        :options="platformOptions"
+        :loading="platformOptionsLoading"
+        :disabled="!selectedAgentId || platformOptions.length <= 1"
+        placeholder="选择 Agent 所属业务平台"
+        class="credential-input"
+        @change="onPlatformChange"
+      />
+      <a-input-password
+        v-model:value="platformApiKey"
+        placeholder="所选平台尚未签发可用 API Key"
+        readonly
+        class="credential-input"
+      />
+      <a-input
+        v-model:value="externalUserId"
+        placeholder="外部用户 ID，例如 user_10086"
+        class="credential-input"
+      />
+      <a-input-password
+        v-model:value="businessAuthorization"
+        placeholder="业务用户 Token，可选；例如 Bearer xxxxx"
+        class="credential-input"
+      />
+    </div>
+
     <!-- 消息区 -->
     <div ref="messageArea" class="message-area" @scroll="onAreaScroll">
       <!-- 漂亮空状态 -->
@@ -378,7 +406,7 @@
  * - 顶部选择 Agent, 下方连续对话
  * - 微吸: 用户在底部则吸底, 翻看历史则不打扰
  */
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import {
@@ -399,7 +427,16 @@ import {
 import { runAgentStream } from '@/api/agentRun'
 import { searchKnowledgeBases } from '@/api/knowledge'
 import { deleteAgentFiles, parseUploadedFile, uploadFiles, type UploadedFileView } from '@/api/file'
+import {
+  getAgentPlatformAccessOptions,
+  type AgentPlatformAccessOption,
+} from '@/api/platform'
 import MarkdownView from '@/components/MarkdownView.vue'
+import {
+  BUSINESS_DEBUG_CONTEXT_CHANGED,
+  readBusinessDebugContext,
+  saveBusinessDebugContext,
+} from '@/utils/businessDebugContext'
 
 defineOptions({ name: 'AgentInvokeView' })
 
@@ -414,9 +451,21 @@ const agentOptions = ref<{ label: string; value: string }[]>([])
 const selectedAgentId = ref<string>('')
 const agentDetail = ref<AgentTemplate | null>(null)
 const agentName = ref<string>('Agent')
+const platformOptionsLoading = ref(false)
+const platformAccessOptions = ref<AgentPlatformAccessOption[]>([])
+const selectedPlatformId = ref<number | undefined>(undefined)
+
+const platformOptions = computed(() => platformAccessOptions.value.map((platform) => ({
+  label: `${platform.platform_name} (${platform.platform_code})`,
+  value: platform.platform_id,
+})))
 
 // 会话与运行
 const conversationId = ref<string>('')
+const initialDebugContext = readBusinessDebugContext()
+const platformApiKey = ref(initialDebugContext.platformApiKey)
+const externalUserId = ref(initialDebugContext.externalUserId)
+const businessAuthorization = ref(initialDebugContext.businessAuthorization)
 const input = ref('')
 const running = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
@@ -614,9 +663,6 @@ function uuid() {
 
 /** 确保当前页面有可用于 checkpointer 的会话 ID。 */
 function ensureConversationId() {
-  if (!conversationId.value) {
-    conversationId.value = uuid()
-  }
   return conversationId.value
 }
 
@@ -652,6 +698,9 @@ async function loadAgentDetail(agentId: string) {
   if (!agentId) {
     agentDetail.value = null
     agentName.value = 'Agent'
+    platformAccessOptions.value = []
+    selectedPlatformId.value = undefined
+    platformApiKey.value = ''
     return
   }
   try {
@@ -660,28 +709,93 @@ async function loadAgentDetail(agentId: string) {
     if (!agentDetail.value?.config?.optional_features?.knowledge_enabled) {
       selectedKnowledgeBaseIds.value = []
     }
+    await loadAgentPlatformAccessOptions(agentId)
   } catch {
     agentName.value = agentId
   }
 }
 
+/** 加载 Agent 绑定的平台，并按数量决定自动选择或显示下拉选择。 */
+async function loadAgentPlatformAccessOptions(agentId: string): Promise<void> {
+  platformOptionsLoading.value = true
+  try {
+    const options = await getAgentPlatformAccessOptions(agentId)
+    platformAccessOptions.value = options
+
+    const savedContext = readBusinessDebugContext()
+    const savedOption = savedContext.agentId === agentId
+      ? options.find((option) => option.platform_id === savedContext.platformId)
+      : undefined
+
+    if (savedOption) {
+      selectedPlatformId.value = savedOption.platform_id
+    } else if (options.length === 1) {
+      selectedPlatformId.value = options[0].platform_id
+    } else {
+      selectedPlatformId.value = undefined
+    }
+    applySelectedPlatformApiKey()
+
+    if (!options.length) {
+      message.warning('当前 Agent 尚未绑定业务平台')
+    }
+  } finally {
+    platformOptionsLoading.value = false
+  }
+}
+
+/** 根据选中的平台自动回填数据库中最近可用的 API Key。 */
+function applySelectedPlatformApiKey(): void {
+  const selectedOption = platformAccessOptions.value.find(
+    (option) => option.platform_id === selectedPlatformId.value,
+  )
+  platformApiKey.value = selectedOption?.api_key || ''
+  if (selectedOption && !selectedOption.api_key) {
+    message.warning(`业务平台“${selectedOption.platform_name}”尚未签发可用 API Key`)
+  }
+}
+
+/** 响应多平台 Agent 的平台下拉选择。 */
+function onPlatformChange(): void {
+  applySelectedPlatformApiKey()
+}
+
 /** 选择器变化 */
-function onAgentChange(agentId: string) {
-  selectedAgentId.value = agentId
+async function onAgentChange(agentId?: string) {
+  const normalizedAgentId = agentId || ''
+  selectedAgentId.value = normalizedAgentId
   messages.value = []
   input.value = ''
   uploadedFiles.value = []
   selectedKnowledgeBaseIds.value = []
   stickToBottom.value = true
-  if (!conversationId.value) {
-    conversationId.value = uuid()
+  conversationId.value = ''
+  await loadAgentDetail(normalizedAgentId)
+}
+
+/** 顶部调试身份保存后，同步 Agent、平台、用户和业务 Token 到调用页。 */
+async function syncDebugContextToInvokePage(): Promise<void> {
+  const context = readBusinessDebugContext()
+  externalUserId.value = context.externalUserId
+  businessAuthorization.value = context.businessAuthorization
+
+  if (context.agentId && context.agentId !== selectedAgentId.value) {
+    await onAgentChange(context.agentId)
+    return
   }
-  loadAgentDetail(agentId)
+
+  const selectedOption = platformAccessOptions.value.find(
+    (option) => option.platform_id === context.platformId,
+  )
+  if (selectedOption) {
+    selectedPlatformId.value = selectedOption.platform_id
+    platformApiKey.value = selectedOption.api_key || context.platformApiKey
+  }
 }
 
 /** 新建会话 */
 function newConversation() {
-  conversationId.value = uuid()
+  conversationId.value = ''
   messages.value = []
   input.value = ''
   uploadedFiles.value = []
@@ -1306,6 +1420,9 @@ function handleAgentStreamEvent(index: number, event: Record<string, any>) {
 
   // 生命周期：运行开始，记录 run_id，方便后续做运行链路查看。
   if (event.type === 'run_start' || event.type === 'resume_start') {
+    if (data.thread_id) {
+      conversationId.value = String(data.thread_id)
+    }
     if (data.run_id) {
       const last = messages.value[index]
       if (last) messages.value[index] = { ...last, run_id: String(data.run_id) }
@@ -1415,12 +1532,32 @@ function handleAgentStreamEvent(index: number, event: Record<string, any>) {
 
 /** 以流式方式发送 Agent 消息。 */
 async function executeAgentStream(payload: Parameters<typeof runAgentStream>[0]) {
+  const selectedPlatform = platformAccessOptions.value.find(
+    (platform) => platform.platform_id === selectedPlatformId.value,
+  )
+  if (!selectedPlatform || !platformApiKey.value.trim() || !externalUserId.value.trim()) {
+    message.warning('请先选择业务平台，并确认该平台已有 API Key 和外部用户 ID')
+    return
+  }
+  saveBusinessDebugContext({
+    agentId: selectedAgentId.value,
+    platformId: selectedPlatform.platform_id,
+    platformName: selectedPlatform.platform_name,
+    platformApiKey: platformApiKey.value.trim(),
+    externalUserId: externalUserId.value.trim(),
+    businessAuthorization: businessAuthorization.value.trim(),
+  })
   running.value = true
   stickToBottom.value = true
   const idx = await createAssistantStreamMessage()
 
   await runAgentStream(
-    payload,
+    {
+      ...payload,
+      external_user_id: externalUserId.value.trim(),
+      platform_api_key: platformApiKey.value.trim(),
+      business_authorization: businessAuthorization.value.trim() || undefined,
+    },
     (event) => handleAgentStreamEvent(idx, event),
     (err) => {
       message.error('流式调用失败:' + err.message)
@@ -1540,16 +1677,31 @@ async function submitPlanConfirmation(messageIndex: number, blockIndex: number, 
 }
 
 onMounted(async () => {
+  window.addEventListener(BUSINESS_DEBUG_CONTEXT_CHANGED, syncDebugContextToInvokePage)
   await Promise.all([loadAgentList(), loadKnowledgeBaseOptions()])
-  const queryAgentId = route.query.agent_id as string
-  if (queryAgentId) {
-    selectedAgentId.value = queryAgentId
-    await loadAgentDetail(queryAgentId)
+  const initialAgentId = (route.query.agent_id as string) || readBusinessDebugContext().agentId
+  if (initialAgentId) {
+    selectedAgentId.value = initialAgentId
+    await loadAgentDetail(initialAgentId)
   }
+})
+onBeforeUnmount(() => {
+  window.removeEventListener(BUSINESS_DEBUG_CONTEXT_CHANGED, syncDebugContextToInvokePage)
 })
 </script>
 
 <style scoped>
+.credential-bar {
+  display: grid;
+  grid-template-columns: 1.2fr 1.2fr 1fr 1.3fr;
+  gap: 10px;
+  padding: 10px 16px;
+  border-bottom: 1px solid #e5e7eb;
+  background: #fff;
+}
+.credential-input {
+  min-width: 0;
+}
 /* ========== 整体页面 ========== */
 .invoke-page {
   display: flex;

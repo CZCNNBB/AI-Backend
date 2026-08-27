@@ -9,7 +9,14 @@ from app.server.agent.src.context.models import AgentConversation, AgentMessage
 class AgentContextRepository:
     """Agent 上下文数据访问层，负责读写 agent schema 下的历史表。"""
 
-    def get_conversation(self, db: Session, conversation_id: str) -> AgentConversation | None:
+    def get_conversation(
+        self,
+        db: Session,
+        *,
+        platform_id: int,
+        external_user_id: str,
+        conversation_id: str,
+    ) -> AgentConversation | None:
         """
         根据 conversation_id 查询会话。
 
@@ -20,7 +27,11 @@ class AgentContextRepository:
         Returns:
             匹配到的会话记录；不存在时返回 None。
         """
-        sql = select(AgentConversation).where(AgentConversation.conversation_id == conversation_id)
+        sql = select(AgentConversation).where(
+            AgentConversation.platform_id == platform_id,
+            AgentConversation.external_user_id == external_user_id,
+            AgentConversation.conversation_id == conversation_id,
+        )
         return db.exec(sql).first()
 
     def create_conversation(self, db: Session, conversation: AgentConversation) -> AgentConversation:
@@ -77,7 +88,11 @@ class AgentContextRepository:
         self,
         db: Session,
         *,
-        conversation_id: str,
+        platform_id: int,
+        external_user_id: str,
+        conversation_id: str | None,
+        page: int,
+        page_size: int,
     ) -> tuple[list[AgentConversation], int]:
         """
         根据 conversation_id 查询 Agent 会话。
@@ -89,14 +104,29 @@ class AgentContextRepository:
         Returns:
             会话列表和总数量。这里保持列表结构，是为了 API 响应结构后续扩展时更稳定。
         """
-        base_sql = select(AgentConversation).where(AgentConversation.conversation_id == conversation_id)
-        count_sql = select(func.count()).select_from(AgentConversation).where(AgentConversation.conversation_id == conversation_id)
-        list_sql = base_sql.order_by(AgentConversation.updated_at.desc()).limit(1)
+        conditions = [
+            AgentConversation.platform_id == platform_id,
+            AgentConversation.external_user_id == external_user_id,
+        ]
+        if conversation_id:
+            conditions.append(AgentConversation.conversation_id == conversation_id)
+        base_sql = select(AgentConversation).where(*conditions)
+        count_sql = select(func.count()).select_from(AgentConversation).where(*conditions)
+        offset = (page - 1) * page_size
+        list_sql = base_sql.order_by(AgentConversation.updated_at.desc()).offset(offset).limit(page_size)
         rows = list(db.exec(list_sql).all())
         total = db.exec(count_sql).one()
         return rows, int(total)
 
-    def list_recent_messages(self, db: Session, conversation_id: str, limit: int = 20) -> list[AgentMessage]:
+    def list_recent_messages(
+        self,
+        db: Session,
+        *,
+        platform_id: int,
+        external_user_id: str,
+        conversation_id: str,
+        limit: int = 20,
+    ) -> list[AgentMessage]:
         """
         查询某个会话最近的历史消息，并按时间正序返回。
 
@@ -108,6 +138,17 @@ class AgentContextRepository:
         Returns:
             最近消息列表，顺序为从旧到新，方便直接拼装到模型上下文。
         """
+        # 必须先校验会话归属，再读取消息。不能只凭 conversation_id 或 message_id
+        # 直接读取，否则会绕过平台和用户隔离边界。
+        conversation = self.get_conversation(
+            db,
+            platform_id=platform_id,
+            external_user_id=external_user_id,
+            conversation_id=conversation_id,
+        )
+        if conversation is None:
+            return []
+
         # 先按 id 倒序取最近 N 条，避免大表扫描过多历史消息。
         latest_sql = (
             select(AgentMessage)

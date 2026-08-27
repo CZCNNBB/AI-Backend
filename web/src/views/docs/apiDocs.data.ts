@@ -1,20 +1,18 @@
 /**
  * Agent 平台接口文档数据
- * - 字段与路径完全对齐后端 /agent/* 接口
+ * - 字段与路径对齐当前后端真实路由，path 包含完整模块前缀
  * - 后续 Agent 平台接口新增 / 调整时,同步更新本文件即可
  */
 import type { Component } from 'vue'
 import {
   ApiOutlined,
   ThunderboltOutlined,
-  AppstoreOutlined,
   RobotOutlined,
   HistoryOutlined,
   MonitorOutlined,
   ToolOutlined,
   DatabaseOutlined,
   ApartmentOutlined,
-  PlayCircleOutlined,
 } from '@ant-design/icons-vue'
 
 /** 单个请求/响应字段描述 */
@@ -35,12 +33,14 @@ export interface ApiDoc {
   groupIcon: Component
   /** 接口方法 */
   method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH'
-  /** 接口路径（不包含 /agent 前缀） */
+  /** 接口路径，包含 /agent、/platform 或 /fastmcp 等完整模块前缀 */
   path: string
   /** 接口名 / 标题 */
   name: string
   /** 一句话说明 */
   summary: string
+  /** HTTP 请求头；身份凭证必须与 JSON 请求体分开说明 */
+  headers?: FieldDoc[]
   /** 请求体字段列表；GET 或无请求体时为空数组 */
   requestFields: FieldDoc[]
   /** 响应体字段列表（data 内部） */
@@ -53,14 +53,122 @@ export interface ApiDoc {
   notes?: string[]
 }
 
+/** 会话和运行查询接口共用的平台身份请求头。 */
+const platformIdentityHeaders: FieldDoc[] = [
+  { name: 'X-API-Key', type: 'string', required: true, description: '识别调用方业务平台的 API Key' },
+  { name: 'Content-Type', type: 'string', required: true, description: '固定为 application/json' },
+]
+
 /** 接口分组顺序 */
 export const apiDocs: ApiDoc[] = [
+  // ================== 业务平台管理 ==================
+  {
+    group: '业务平台管理',
+    groupIcon: ApartmentOutlined,
+    method: 'POST',
+    path: '/platform/platforms/upsert',
+    name: '创建或更新业务平台',
+    summary: '公司内网管理接口，用于登记接入 AI-backend 的业务系统。',
+    requestFields: [
+      { name: 'platform_code', type: 'string', required: true, description: '稳定且唯一的平台编码；更新时不能随意改变' },
+      { name: 'platform_name', type: 'string', required: true, description: '业务平台展示名称' },
+      { name: 'description', type: 'string', description: '平台用途说明' },
+      { name: 'status', type: 'enabled | disabled', required: true, description: '平台状态' },
+    ],
+    responseFields: [
+      { name: 'id', type: 'number', description: '业务平台数据库主键' },
+      { name: 'platform_code', type: 'string', description: '平台编码' },
+      { name: 'platform_name', type: 'string', description: '平台名称' },
+      { name: 'status', type: 'string', description: '平台状态' },
+    ],
+    requestExample: `{
+  "platform_code": "order_system",
+  "platform_name": "订单业务系统",
+  "description": "订单域 Agent 接入",
+  "status": "enabled"
+}`,
+    notes: ['管理接口当前仅供公司内网管理端调用，不要求业务平台携带自己的 X-API-Key。'],
+  },
+  {
+    group: '业务平台管理',
+    groupIcon: ApartmentOutlined,
+    method: 'POST',
+    path: '/platform/platforms/search',
+    name: '查询业务平台列表',
+    summary: '分页查询已经登记的业务平台。',
+    requestFields: [
+      { name: 'keyword', type: 'string', description: '匹配平台编码、名称和说明' },
+      { name: 'status', type: 'enabled | disabled', description: '状态过滤' },
+      { name: 'page', type: 'number', description: '页码，默认 1' },
+      { name: 'page_size', type: 'number', description: '每页数量，最大 100' },
+    ],
+    responseFields: [
+      { name: 'total', type: 'number', description: '总数量' },
+      { name: 'items', type: 'object[]', description: '业务平台列表' },
+    ],
+    requestExample: `{ "page": 1, "page_size": 100 }`,
+  },
+  {
+    group: '业务平台管理',
+    groupIcon: ApartmentOutlined,
+    method: 'POST',
+    path: '/platform/platforms/api-keys/create',
+    name: '签发平台 API Key',
+    summary: '为指定业务平台签发一个调用 AI-backend 的 API Key。',
+    requestFields: [
+      { name: 'platform_code', type: 'string', required: true, description: '业务平台编码' },
+      { name: 'key_name', type: 'string', required: true, description: 'Key 用途名称，例如 production' },
+      { name: 'expires_at', type: 'string', description: '可选 ISO8601 过期时间；不传表示长期有效' },
+    ],
+    responseFields: [
+      { name: 'id', type: 'number', description: 'API Key 记录 ID' },
+      { name: 'key_prefix', type: 'string', description: '用于辨识 Key 的安全前缀' },
+      { name: 'api_key', type: 'string', description: '完整 API Key；请勿写入日志或放到业务前端' },
+    ],
+    requestExample: `{ "platform_code": "order_system", "key_name": "production" }`,
+    notes: ['当前公司内网 MVP 会保存完整明文，管理页面可以再次查看和复制。鉴权时仍使用 SHA-256 Hash。'],
+  },
+  {
+    group: '业务平台管理',
+    groupIcon: ApartmentOutlined,
+    method: 'POST',
+    path: '/platform/platforms/api-keys/list',
+    name: '查看平台 API Key',
+    summary: '查询指定平台已经签发的 API Key，供公司内网管理页面查看、复制和停用。',
+    requestFields: [
+      { name: 'platform_code', type: 'string', required: true, description: '业务平台编码' },
+    ],
+    responseFields: [
+      { name: 'id', type: 'number', description: 'API Key 记录 ID' },
+      { name: 'key_name', type: 'string', description: 'Key 用途名称' },
+      { name: 'api_key', type: 'string', description: '完整明文 API Key' },
+      { name: 'status', type: 'enabled | disabled', description: 'Key 状态' },
+      { name: 'expires_at', type: 'string', description: '可选过期时间' },
+    ],
+    requestExample: `{ "platform_code": "order_system" }`,
+  },
+  {
+    group: '业务平台管理',
+    groupIcon: ApartmentOutlined,
+    method: 'POST',
+    path: '/platform/platforms/api-keys/disable',
+    name: '停用平台 API Key',
+    summary: '立即停用指定 API Key；使用该 Key 的后续请求将无法通过平台认证。',
+    requestFields: [
+      { name: 'api_key_id', type: 'number', required: true, description: '待停用的 API Key 记录 ID' },
+    ],
+    responseFields: [
+      { name: '(boolean)', type: 'boolean', description: '是否停用成功' },
+    ],
+    requestExample: `{ "api_key_id": 1 }`,
+  },
+
   // ================== 平台基础 ==================
   {
     group: '平台基础',
     groupIcon: ApiOutlined,
     method: 'GET',
-    path: '/health',
+    path: '/agent/health',
     name: 'Agent 服务健康检查',
     summary: '检查 Agent 服务是否已经挂载，常用于监控探活。',
     requestFields: [],
@@ -78,7 +186,7 @@ export const apiDocs: ApiDoc[] = [
     group: '平台基础',
     groupIcon: ApiOutlined,
     method: 'GET',
-    path: '/model/config',
+    path: '/agent/model/config',
     name: '查询模型资源池摘要',
     summary: '返回当前平台已配置的可用模型 / Chat / Embedding / Rerank 模型列表。',
     requestFields: [],
@@ -103,7 +211,7 @@ export const apiDocs: ApiDoc[] = [
     group: '平台基础',
     groupIcon: ApiOutlined,
     method: 'GET',
-    path: '/capabilities',
+    path: '/agent/capabilities',
     name: '查询 Agent 服务能力',
     summary: '返回 Agent 服务当前已挂载的模块、特性与已注册工具。',
     requestFields: [],
@@ -131,44 +239,57 @@ export const apiDocs: ApiDoc[] = [
     group: 'Agent 运行',
     groupIcon: ThunderboltOutlined,
     method: 'POST',
-    path: '/run',
-    name: '运行通用 Agent',
-    summary: '根据 agent_id 运行一次 Agent；stream=false 返回 JSON，stream=true 返回 SSE。',
+    path: '/agent/messages',
+    name: '发送 Agent 消息',
+    summary: '外部业务平台统一的 Agent 调用入口；stream=false 返回 JSON，stream=true 返回 SSE。',
+    headers: [
+      { name: 'X-API-Key', type: 'string', required: true, description: '识别调用方业务平台的 API Key' },
+      { name: 'X-Business-Authorization', type: 'string', description: '可选，透传给 runtime_bearer MCP Tool 的业务用户 Token，例如 Bearer xxx' },
+      { name: 'Content-Type', type: 'string', required: true, description: '固定为 application/json' },
+    ],
     requestFields: [
       { name: 'agent_id', type: 'string', required: true, description: 'Agent 模板的稳定业务 ID' },
-      { name: 'input', type: 'string | object', required: true, description: '用户输入，可以是字符串或多模态对象' },
+      { name: 'external_user_id', type: 'string', required: true, description: '业务平台中的稳定用户 ID，用于隔离会话、消息和运行记录' },
       { name: 'conversation_id', type: 'string', description: '会话 ID；为空时会自动创建' },
-      { name: 'stream', type: 'boolean', description: '是否走 SSE 流式输出', example: false },
-      { name: 'override_config', type: 'object', description: '运行级别覆盖配置（tools、system_prompt 等）' },
+      { name: 'message', type: 'string', required: true, description: '用户本次发送的文本' },
+      { name: 'message_type', type: 'string', description: '消息类型，默认 text' },
+      { name: 'stream', type: 'boolean', description: '是否走 SSE 流式输出，默认 true', example: true },
+      { name: 'payload', type: 'object', description: '表单、按钮等结构化消息负载' },
+      { name: 'inputs', type: 'object', description: '注入 Agent runtime 和 MCP runtime 参数的业务变量' },
+      { name: 'file_ids', type: 'string[]', description: '通过 /file/upload 获得的附件 ID' },
+      { name: 'runtime_options', type: 'object', description: '模型、温度、超时和重试配置' },
     ],
     responseFields: [
-      { name: 'run_id', type: 'string', description: '本次运行的唯一 ID' },
-      { name: 'conversation_id', type: 'string', description: '关联的会话 ID' },
-      { name: 'agent_id', type: 'string', description: '运行的 Agent 模板 ID' },
-      { name: 'output', type: 'string | object', description: 'Agent 最终输出' },
-      { name: 'messages', type: 'object[]', description: '本轮新增的消息列表' },
-      { name: 'elapsed_ms', type: 'number', description: '总耗时（毫秒）' },
+      { name: 'run_id', type: 'string', description: '本次运行 ID；流式模式在 run_start 事件中返回' },
+      { name: 'conversation_id', type: 'string', description: '会话 ID；后续对话应继续携带' },
+      { name: 'output / content', type: 'string | object', description: '非流式最终输出，或流式 model_delta 内容' },
     ],
     requestExample: `{
-  "agent_id": "demo_agent",
-  "input": "你好,帮我介绍一下自己",
+  "agent_id": "order-agent",
+  "external_user_id": "user_10086",
   "conversation_id": null,
-  "stream": false
-}`,
-    responseExample: `{
-  "code": 0,
-  "msg": "success",
-  "data": {
-    "run_id": "run_20260626_0001",
-    "conversation_id": "conv_20260626_0001",
-    "agent_id": "demo_agent",
-    "output": "你好!我是 demo_agent ...",
-    "messages": [],
-    "elapsed_ms": 1234
+  "message": "帮我查询最近的订单",
+  "message_type": "text",
+  "stream": true,
+  "payload": {},
+  "inputs": {},
+  "file_ids": [],
+  "runtime_options": {
+    "model_code": "chat_main",
+    "temperature": 0.2,
+    "timeout_seconds": 600,
+    "max_retries": 2
   }
 }`,
+    responseExample: `data: {"type":"run_start","data":{"run_id":"run_xxx","conversation_id":"conv_xxx"}}
+
+data: {"type":"model_delta","data":{"content":"查询结果"}}
+
+data: {"type":"run_end","data":{"status":"succeeded"}}`,
     notes: [
-      '当 stream=true 时，HTTP 响应为 text/event-stream，每个 SSE 事件包含 type 与 payload。',
+      'stream=true 时响应为 text/event-stream；常见事件包括 run_start、reasoning_delta、model_delta、tool_call、run_end 和 error。',
+      '相同 X-API-Key 下，external_user_id 必须使用业务系统中的稳定用户标识。',
+      '首次请求 conversation_id 传 null；收到新会话 ID 后，继续对话时原样回传。',
     ],
   },
 
@@ -177,7 +298,7 @@ export const apiDocs: ApiDoc[] = [
     group: 'Agent 模板',
     groupIcon: RobotOutlined,
     method: 'POST',
-    path: '/templates/upsert',
+    path: '/agent/templates/upsert',
     name: '创建或更新 Agent 模板',
     summary: '按 agent_id 创建或更新一个 Agent 模板。',
     requestFields: [
@@ -226,7 +347,7 @@ export const apiDocs: ApiDoc[] = [
     group: 'Agent 模板',
     groupIcon: RobotOutlined,
     method: 'POST',
-    path: '/templates/detail',
+    path: '/agent/templates/detail',
     name: '查询 Agent 模板详情',
     summary: '根据 agent_id 查询单个 Agent 模板详情，不存在时 data 为 null。',
     requestFields: [
@@ -253,7 +374,7 @@ export const apiDocs: ApiDoc[] = [
     group: 'Agent 模板',
     groupIcon: RobotOutlined,
     method: 'POST',
-    path: '/templates/search',
+    path: '/agent/templates/search',
     name: '查询 Agent 模板列表',
     summary: '分页查询 Agent 模板列表，支持关键字与状态筛选。',
     requestFields: [
@@ -284,7 +405,7 @@ export const apiDocs: ApiDoc[] = [
     group: 'Agent 模板',
     groupIcon: RobotOutlined,
     method: 'POST',
-    path: '/templates/delete',
+    path: '/agent/templates/delete',
     name: '批量删除 Agent 模板',
     summary: '根据 agent_ids 列表批量删除 Agent 模板。',
     requestFields: [
@@ -307,15 +428,18 @@ export const apiDocs: ApiDoc[] = [
     group: '运行记录',
     groupIcon: MonitorOutlined,
     method: 'POST',
-    path: '/runs/search',
+    path: '/agent/runs/search',
     name: '查询 Agent 运行记录列表',
-    summary: '分页查询 Agent 运行记录，支持按 agent_id / 状态 / 时间筛选。',
+    summary: '在当前业务平台和指定外部用户范围内分页查询 Agent 运行记录。',
+    headers: platformIdentityHeaders,
     requestFields: [
+      { name: 'external_user_id', type: 'string', required: true, description: '外部业务用户 ID' },
+      { name: 'run_id', type: 'string', description: '按运行 ID 精确匹配' },
+      { name: 'run_type', type: 'main | sub', description: '主 Agent 或 A2A 子 Agent' },
+      { name: 'parent_run_id', type: 'string', description: '按父运行 ID 查询子运行' },
       { name: 'agent_id', type: 'string', description: '按 Agent 模板 ID 过滤' },
+      { name: 'conversation_id', type: 'string', description: '按会话 ID 过滤' },
       { name: 'status', type: 'string', description: '运行状态过滤' },
-      { name: 'keyword', type: 'string', description: '关键字过滤' },
-      { name: 'start_time', type: 'string', description: '起始时间（ISO8601）' },
-      { name: 'end_time', type: 'string', description: '结束时间（ISO8601）' },
       { name: 'page', type: 'number', description: '页码', example: 1 },
       { name: 'page_size', type: 'number', description: '每页数量', example: 20 },
     ],
@@ -323,7 +447,7 @@ export const apiDocs: ApiDoc[] = [
       { name: 'total', type: 'number', description: '总数量' },
       { name: 'items', type: 'object[]', description: '运行记录列表' },
     ],
-    requestExample: `{ "agent_id": "demo_agent", "page": 1, "page_size": 20 }`,
+    requestExample: `{ "external_user_id": "user_10086", "agent_id": "order-agent", "page": 1, "page_size": 20 }`,
     responseExample: `{
   "code": 0,
   "msg": "success",
@@ -334,11 +458,13 @@ export const apiDocs: ApiDoc[] = [
     group: '运行记录',
     groupIcon: MonitorOutlined,
     method: 'POST',
-    path: '/runs/detail',
+    path: '/agent/runs/detail',
     name: '查询 Agent 运行记录详情',
     summary: '根据 run_id 查询单条运行记录详情。',
+    headers: platformIdentityHeaders,
     requestFields: [
       { name: 'run_id', type: 'string', required: true, description: '运行记录 ID' },
+      { name: 'external_user_id', type: 'string', required: true, description: '外部业务用户 ID' },
     ],
     responseFields: [
       { name: 'run_id', type: 'string', description: '运行记录 ID' },
@@ -350,7 +476,7 @@ export const apiDocs: ApiDoc[] = [
       { name: 'started_at', type: 'string', description: '开始时间' },
       { name: 'ended_at', type: 'string', description: '结束时间' },
     ],
-    requestExample: `{ "run_id": "run_20260626_0001" }`,
+    requestExample: `{ "run_id": "run_20260626_0001", "external_user_id": "user_10086" }`,
     responseExample: `{
   "code": 0,
   "msg": "success",
@@ -366,17 +492,19 @@ export const apiDocs: ApiDoc[] = [
     group: '运行记录',
     groupIcon: ApartmentOutlined,
     method: 'POST',
-    path: '/runs/chain',
+    path: '/agent/runs/chain',
     name: '查询 Agent 主子运行链路',
     summary: '查询某次主 Agent 运行及其触发的子 Agent 运行链路。',
+    headers: platformIdentityHeaders,
     requestFields: [
       { name: 'run_id', type: 'string', required: true, description: '主 Agent 运行 ID' },
+      { name: 'external_user_id', type: 'string', required: true, description: '外部业务用户 ID' },
     ],
     responseFields: [
       { name: 'run_id', type: 'string', description: '主运行 ID' },
       { name: 'items', type: 'object[]', description: '主运行 + 全部子运行记录' },
     ],
-    requestExample: `{ "run_id": "run_20260626_0001" }`,
+    requestExample: `{ "run_id": "run_20260626_0001", "external_user_id": "user_10086" }`,
     responseExample: `{
   "code": 0,
   "msg": "success",
@@ -392,12 +520,13 @@ export const apiDocs: ApiDoc[] = [
     group: '会话',
     groupIcon: HistoryOutlined,
     method: 'POST',
-    path: '/conversations/search',
+    path: '/agent/conversations/search',
     name: '查询 Agent 会话列表',
-    summary: '分页查询 Agent 会话列表。',
+    summary: '在当前业务平台和指定外部用户范围内分页查询 Agent 会话。',
+    headers: platformIdentityHeaders,
     requestFields: [
-      { name: 'agent_id', type: 'string', description: '按 Agent 模板 ID 过滤' },
-      { name: 'keyword', type: 'string', description: '关键字过滤' },
+      { name: 'external_user_id', type: 'string', required: true, description: '外部业务用户 ID' },
+      { name: 'conversation_id', type: 'string', description: '可选，会话 ID 精确匹配' },
       { name: 'page', type: 'number', description: '页码', example: 1 },
       { name: 'page_size', type: 'number', description: '每页数量', example: 20 },
     ],
@@ -405,7 +534,7 @@ export const apiDocs: ApiDoc[] = [
       { name: 'total', type: 'number', description: '总数量' },
       { name: 'items', type: 'object[]', description: '会话列表' },
     ],
-    requestExample: `{ "page": 1, "page_size": 20 }`,
+    requestExample: `{ "external_user_id": "user_10086", "page": 1, "page_size": 20 }`,
     responseExample: `{
   "code": 0,
   "msg": "success",
@@ -416,10 +545,12 @@ export const apiDocs: ApiDoc[] = [
     group: '会话',
     groupIcon: HistoryOutlined,
     method: 'POST',
-    path: '/conversations/messages',
+    path: '/agent/conversations/messages',
     name: '查询 Agent 会话消息',
-    summary: '查询某个会话的消息列表，最多返回 200 条。',
+    summary: '查询当前业务平台、指定外部用户的某个会话消息，最多返回 200 条。',
+    headers: platformIdentityHeaders,
     requestFields: [
+      { name: 'external_user_id', type: 'string', required: true, description: '外部业务用户 ID' },
       { name: 'conversation_id', type: 'string', required: true, description: '会话 ID' },
       { name: 'limit', type: 'number', description: '返回消息数量上限', example: 200 },
     ],
@@ -427,7 +558,7 @@ export const apiDocs: ApiDoc[] = [
       { name: 'conversation_id', type: 'string', description: '会话 ID' },
       { name: 'messages', type: 'object[]', description: '消息列表' },
     ],
-    requestExample: `{ "conversation_id": "conv_20260626_0001", "limit": 200 }`,
+    requestExample: `{ "external_user_id": "user_10086", "conversation_id": "conv_20260626_0001", "limit": 200 }`,
     responseExample: `{
   "code": 0,
   "msg": "success",
@@ -441,7 +572,7 @@ export const apiDocs: ApiDoc[] = [
     group: '模型配置',
     groupIcon: DatabaseOutlined,
     method: 'POST',
-    path: '/models/upsert',
+    path: '/agent/models/upsert',
     name: '新增或更新模型配置',
     summary: '按 model_code 新增或更新一个模型配置。',
     requestFields: [
@@ -472,7 +603,7 @@ export const apiDocs: ApiDoc[] = [
     group: '模型配置',
     groupIcon: DatabaseOutlined,
     method: 'POST',
-    path: '/models/detail',
+    path: '/agent/models/detail',
     name: '查询模型配置详情',
     summary: '根据 model_code 查询模型配置详情。',
     requestFields: [
@@ -493,7 +624,7 @@ export const apiDocs: ApiDoc[] = [
     group: '模型配置',
     groupIcon: DatabaseOutlined,
     method: 'POST',
-    path: '/models/search',
+    path: '/agent/models/search',
     name: '查询模型配置列表',
     summary: '分页查询模型配置列表。',
     requestFields: [
@@ -518,7 +649,7 @@ export const apiDocs: ApiDoc[] = [
     group: '模型配置',
     groupIcon: DatabaseOutlined,
     method: 'POST',
-    path: '/models/delete',
+    path: '/agent/models/delete',
     name: '批量删除模型配置',
     summary: '根据 model_codes 列表批量删除模型配置。',
     requestFields: [
@@ -540,7 +671,7 @@ export const apiDocs: ApiDoc[] = [
     group: '工具',
     groupIcon: ToolOutlined,
     method: 'POST',
-    path: '/tools/invoke',
+    path: '/agent/tools/invoke',
     name: '调试调用 Agent 工具',
     summary: '调试调用一个已注册的常规 Agent 工具，常用于工具自测。',
     requestFields: [
@@ -567,33 +698,6 @@ export const apiDocs: ApiDoc[] = [
 }`,
   },
 
-  // ================== Playground ==================
-  {
-    group: 'Playground',
-    groupIcon: PlayCircleOutlined,
-    method: 'GET',
-    path: '/agents/:agent_id/playground',
-    name: 'Agent Playground 试跑台',
-    summary: '前端页面：在线选择模板、输入问题、查看运行结果与会话上下文。',
-    requestFields: [],
-    responseFields: [
-      { name: '(页面)', type: '-', description: '前端路由，无后端接口' },
-    ],
-    notes: ['该入口为前端页面，不是后端 HTTP 接口。'],
-  },
-  {
-    group: 'Playground',
-    groupIcon: AppstoreOutlined,
-    method: 'GET',
-    path: '/agents',
-    name: 'Agent 模板管理列表',
-    summary: '前端页面：分页、关键字、状态筛选；支持编辑 / 试跑 / 克隆 / 删除。',
-    requestFields: [],
-    responseFields: [
-      { name: '(页面)', type: '-', description: '前端路由，无后端接口' },
-    ],
-    notes: ['该入口为前端页面，不是后端 HTTP 接口。'],
-  },
 ]
 
 /** 把接口按 group 分组,便于页面渲染 */

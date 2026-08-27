@@ -253,6 +253,7 @@ class AgentService:
 
         return AgentRunResponse(
             run_id=context.run_id,
+            conversation_id=context.thread_id,
             answer=answer,
             # 这里只返回已经产生 ToolMessage 的真实执行结果，模型声明的 tool_calls 不算成功。
             tool_results=collect_tool_results(list(result.get("messages") or [])),
@@ -422,7 +423,7 @@ class AgentService:
         """
         metadata: dict[str, Any] = {
             "agent_run_id": context.run_id,
-            "agent_thread_id": context.thread_id,
+            "agent_thread_id": context.checkpoint_thread_id,
         }
         # A2A 子 Agent 会通过 inputs 写入这些诊断字段，用于观察子 Agent 的运行情况。
         # 原始流式分片冒泡到主 Agent 时，metadata 是否仍能保留子运行身份。
@@ -438,7 +439,7 @@ class AgentService:
                 metadata[key] = value
 
         return {
-            "configurable": {"thread_id": context.thread_id},
+            "configurable": {"thread_id": context.checkpoint_thread_id},
             "recursion_limit": get_agent_runtime_settings().recursion_limit,
             "metadata": metadata,
         }
@@ -519,6 +520,8 @@ class AgentService:
             "type": "run_start",
             "data": {
                 "run_id": context.run_id,
+                # 对外明确返回业务会话 ID，避免接入方依赖内部 thread_id 命名。
+                "conversation_id": context.thread_id,
                 "thread_id": context.thread_id,
                 "persistent_conversation": request.conversation_id is not None,
                 "stream": True,

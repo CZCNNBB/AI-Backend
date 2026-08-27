@@ -109,12 +109,19 @@ const routes = [
   },
   // 9. 工具管理
   {
+    path: '/platforms',
+    name: 'PlatformManager',
+    component: () => import('@/views/platforms/PlatformManager.vue'),
+    meta: { layout: 'default', title: '业务平台' },
+  },
+  // 10. 工具管理
+  {
     path: '/tools',
     name: 'ToolManager',
     component: () => import('@/views/tools/ToolManager.vue'),
     meta: { layout: 'default', title: '工具管理' },
   },
-  // 9. 模型配置
+  // 11. 模型配置
   {
     path: '/settings/model',
     name: 'ModelConfig',

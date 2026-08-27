@@ -26,11 +26,12 @@ export interface McpToolParameter {
 export interface McpToolUpsertRequest {
   name: string
   description?: string | null
+  platform_ids: number[]
   api_url: string
   http_method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
   static_headers: Record<string, unknown>
   parameters: McpToolParameter[]
-  auth_type: 'none' | 'bearer' | 'basic' | 'api_key'
+  auth_type: 'none' | 'bearer' | 'basic' | 'api_key' | 'runtime_bearer'
   auth_config: Record<string, unknown>
   output_schema?: Record<string, any> | null
   timeout_seconds: number
@@ -71,14 +72,32 @@ export function searchMcpTools() {
   return httpPost<McpToolSearchResponse>('/fastmcp/tools/search', { page: 1, page_size: 100 })
 }
 
+/** 查询平台集合完全覆盖 Agent 平台集合的已发布 MCP Tool。 */
+export function listEligibleMcpTools(platform_ids: number[]) {
+  return httpPost<McpToolView[]>('/fastmcp/tools/eligible', { platform_ids })
+}
+
 /** 保存前或保存后测试目标 HTTP API。 */
 export function testMcpTool(payload: {
   name?: string
   tool?: McpToolUpsertRequest
   args?: Record<string, unknown>
   runtime_inputs?: Record<string, unknown>
-}) {
-  return httpPost<McpToolTestResponse>('/fastmcp/tools/test', payload)
+}, businessAuthorization?: string) {
+  return httpPost<McpToolTestResponse>('/fastmcp/tools/test', payload, {
+    headers: businessAuthorization ? { 'X-Business-Authorization': businessAuthorization } : undefined,
+  })
+}
+
+/** 直接调试一个已经发布的 MCP Tool。 */
+export function invokeMcpTool(
+  name: string,
+  args: Record<string, unknown>,
+  businessAuthorization?: string,
+) {
+  return httpPost<unknown>('/fastmcp/tools/invoke', { name, args, runtime_inputs: {} }, {
+    headers: businessAuthorization ? { 'X-Business-Authorization': businessAuthorization } : undefined,
+  })
 }
 
 /** 发布或停用一个 MCP Tool。 */

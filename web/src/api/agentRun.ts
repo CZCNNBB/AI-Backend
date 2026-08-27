@@ -4,6 +4,7 @@
  */
 import { httpPost } from './http'
 import type { PageRequest, PageResponse } from './types'
+import { readBusinessDebugContext } from '@/utils/businessDebugContext'
 
 /** Agent 运行记录视图（AgentRunView） */
 export interface AgentRun {
@@ -42,22 +43,39 @@ export interface SearchAgentRunsParams extends PageRequest {
 
 /** 搜索运行记录 */
 export function searchAgentRuns(params: SearchAgentRunsParams) {
-  return httpPost<PageResponse<AgentRun>>('/agent/runs/search', params)
+  return httpPost<PageResponse<AgentRun>>('/agent/runs/search', {
+    ...params,
+    external_user_id: getStoredExternalUserId(),
+  })
 }
 
 /** 查询单条运行详情 */
 export function getAgentRunDetail(run_id: string) {
-  return httpPost<AgentRun>('/agent/runs/detail', { run_id })
+  return httpPost<AgentRun>('/agent/runs/detail', {
+    run_id,
+    external_user_id: getStoredExternalUserId(),
+  })
 }
 
 /** 查询主子运行链路 */
 export function getAgentRunChain(run_id: string) {
-  return httpPost<AgentRunChain>('/agent/runs/chain', { run_id })
+  return httpPost<AgentRunChain>('/agent/runs/chain', {
+    run_id,
+    external_user_id: getStoredExternalUserId(),
+  })
+}
+
+/** 读取管理调用页保存的外部用户 ID，用于运行记录隔离查询。 */
+function getStoredExternalUserId() {
+  return readBusinessDebugContext().externalUserId
 }
 
 /** Agent 消息请求兼容载荷；页面仍可传 query，这里会映射为后端 message。 */
 export interface AgentRunRequestPayload {
   agent_id?: string | null
+  external_user_id?: string
+  platform_api_key?: string
+  business_authorization?: string
   query: string
   conversation_id?: string
   stream?: boolean
@@ -86,7 +104,14 @@ export interface AgentRunRequestPayload {
 
 /** 将旧的 query 载荷转换为后端统一消息入口需要的 message 载荷。 */
 function toAgentMessagePayload(payload: AgentRunRequestPayload, stream: boolean) {
-  const { query, message_type, payload: structuredPayload, ...rest } = payload
+  const {
+    query,
+    message_type,
+    payload: structuredPayload,
+    platform_api_key: _platformApiKey,
+    business_authorization: _businessAuthorization,
+    ...rest
+  } = payload
   return {
     ...rest,
     message: query,
@@ -99,12 +124,29 @@ function toAgentMessagePayload(payload: AgentRunRequestPayload, stream: boolean)
 /** Agent 运行响应（AgentRunResponse） */
 export interface AgentRunResponse {
   run_id: string
+  conversation_id: string
   answer: string
 }
 
 /** 同步运行 Agent（stream=false） */
 export function runAgent(payload: AgentRunRequestPayload) {
-  return httpPost<AgentRunResponse>('/agent/messages', toAgentMessagePayload(payload, false))
+  return httpPost<AgentRunResponse>('/agent/messages', toAgentMessagePayload(payload, false), {
+    headers: buildAgentHeaders(payload),
+  })
+}
+
+/** 构建平台身份与业务用户 Token 请求头，敏感值不会进入 JSON 请求体。 */
+function buildAgentHeaders(payload: AgentRunRequestPayload): Record<string, string> {
+  const debugContext = readBusinessDebugContext()
+  const headers: Record<string, string> = {}
+  const platformApiKey = payload.platform_api_key?.trim() || debugContext.platformApiKey.trim()
+  const businessAuthorization = payload.business_authorization?.trim()
+    || debugContext.businessAuthorization.trim()
+  if (platformApiKey) headers['X-API-Key'] = platformApiKey
+  if (businessAuthorization) {
+    headers['X-Business-Authorization'] = businessAuthorization
+  }
+  return headers
 }
 
 /** SSE 事件类型 */
@@ -157,7 +199,10 @@ export async function runAgentStream(
   try {
     const response = await fetch(`${baseURL}/agent/messages`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...buildAgentHeaders(payload),
+      },
       body: JSON.stringify(toAgentMessagePayload(payload, true)),
     })
     if (!response.ok || !response.body) {

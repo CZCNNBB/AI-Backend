@@ -20,6 +20,8 @@ class AgentRunService:
         *,
         run_id: str,
         query: str,
+        platform_id: int,
+        external_user_id: str,
         run_type: str = "main",
         parent_run_id: str | None = None,
         agent_id: str | None = None,
@@ -45,6 +47,8 @@ class AgentRunService:
         """
         row = AgentRun(
             run_id=run_id,
+            platform_id=platform_id,
+            external_user_id=external_user_id,
             run_type=run_type,
             parent_run_id=parent_run_id,
             agent_id=agent_id,
@@ -167,6 +171,8 @@ class AgentRunService:
         """
         return AgentRunView(
             run_id=row.run_id,
+            platform_id=row.platform_id,
+            external_user_id=row.external_user_id,
             run_type=row.run_type,
             parent_run_id=row.parent_run_id,
             agent_id=row.agent_id,
@@ -183,7 +189,13 @@ class AgentRunService:
             finished_at=row.finished_at.isoformat() if row.finished_at else None,
         )
 
-    def search_runs(self, db: Session, request: AgentRunSearchRequest) -> AgentRunSearchResponse:
+    def search_runs(
+        self,
+        db: Session,
+        request: AgentRunSearchRequest,
+        *,
+        platform_id: int,
+    ) -> AgentRunSearchResponse:
         """分页查询 Agent 运行记录。
 
         Args:
@@ -193,7 +205,10 @@ class AgentRunService:
         Returns:
             Agent 运行记录分页响应。
         """
-        conditions = []
+        conditions = [
+            AgentRun.platform_id == platform_id,
+            AgentRun.external_user_id == request.external_user_id,
+        ]
         if request.run_id:
             conditions.append(AgentRun.run_id == request.run_id.strip())
         if request.run_type:
@@ -226,7 +241,14 @@ class AgentRunService:
             items=[self._to_view(row) for row in rows],
         )
 
-    def get_run_view(self, db: Session, run_id: str) -> AgentRunView | None:
+    def get_run_view(
+        self,
+        db: Session,
+        run_id: str,
+        *,
+        platform_id: int,
+        external_user_id: str,
+    ) -> AgentRunView | None:
         """根据 run_id 查询 Agent 运行记录视图。
 
         Args:
@@ -236,10 +258,22 @@ class AgentRunService:
         Returns:
             匹配的运行记录视图；不存在时返回 None。
         """
-        row = self.get_by_run_id(db, run_id)
+        row = self.get_by_run_id_for_owner(
+            db,
+            run_id=run_id,
+            platform_id=platform_id,
+            external_user_id=external_user_id,
+        )
         return self._to_view(row) if row else None
 
-    def list_run_chain(self, db: Session, run_id: str) -> list[AgentRunView]:
+    def list_run_chain(
+        self,
+        db: Session,
+        run_id: str,
+        *,
+        platform_id: int,
+        external_user_id: str,
+    ) -> list[AgentRunView]:
         """查询某次主 Agent 运行及其触发的子 Agent 运行。
 
         Args:
@@ -251,13 +285,24 @@ class AgentRunService:
         """
         sql = (
             select(AgentRun)
-            .where(or_(AgentRun.run_id == run_id, AgentRun.parent_run_id == run_id))
+            .where(
+                AgentRun.platform_id == platform_id,
+                AgentRun.external_user_id == external_user_id,
+                or_(AgentRun.run_id == run_id, AgentRun.parent_run_id == run_id),
+            )
             .order_by(AgentRun.started_at.asc())
         )
         rows = db.exec(sql).all()
         return [self._to_view(row) for row in rows]
 
-    def get_latest_interrupted_by_conversation(self, db: Session, conversation_id: str) -> AgentRun | None:
+    def get_latest_interrupted_by_conversation(
+        self,
+        db: Session,
+        *,
+        platform_id: int,
+        external_user_id: str,
+        conversation_id: str,
+    ) -> AgentRun | None:
         """查询某个会话中最新的待恢复主 Agent 运行。
 
         Args:
@@ -274,6 +319,8 @@ class AgentRunService:
         sql = (
             select(AgentRun)
             .where(
+                AgentRun.platform_id == platform_id,
+                AgentRun.external_user_id == external_user_id,
                 AgentRun.conversation_id == cleaned_conversation_id,
                 AgentRun.run_type == "main",
                 AgentRun.status == "interrupted",
@@ -293,4 +340,20 @@ class AgentRunService:
             匹配的 AgentRun；不存在时返回 None。
         """
         sql = select(AgentRun).where(AgentRun.run_id == run_id)
+        return db.exec(sql).first()
+
+    def get_by_run_id_for_owner(
+        self,
+        db: Session,
+        *,
+        run_id: str,
+        platform_id: int,
+        external_user_id: str,
+    ) -> AgentRun | None:
+        """按平台、外部用户和 run_id 查询归属于当前调用方的运行记录。"""
+        sql = select(AgentRun).where(
+            AgentRun.run_id == run_id,
+            AgentRun.platform_id == platform_id,
+            AgentRun.external_user_id == external_user_id,
+        )
         return db.exec(sql).first()

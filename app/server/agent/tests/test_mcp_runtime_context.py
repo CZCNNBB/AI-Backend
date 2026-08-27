@@ -12,8 +12,10 @@ from app.server.agent.src.mcp.client import (
 )
 from app.server.agent.src.mcp.runtime_context_interceptor import (
     MCPRuntimeContextInterceptor,
+    RUNTIME_CREDENTIALS_HEADER,
     RUNTIME_INPUTS_HEADER,
     RUN_ID_HEADER,
+    encode_runtime_credentials,
     encode_runtime_inputs,
 )
 
@@ -32,7 +34,11 @@ class MCPRuntimeContextInterceptorTestCase(unittest.IsolatedAsyncioTestCase):
             "stage_code": "project_preparation",
             "project_context": {"name": "新品发布会", "tags": ["科技", "深圳"]},
         }
-        context = SimpleNamespace(inputs=values, run_id="run-test")
+        context = SimpleNamespace(
+            inputs=values,
+            run_id="run-test",
+            runtime_credentials={"authorization": "Bearer secret-user-token"},
+        )
         return SimpleNamespace(context=context), values
 
     async def test_injects_complete_inputs_for_any_agent_mcp_tool(self) -> None:
@@ -64,6 +70,10 @@ class MCPRuntimeContextInterceptorTestCase(unittest.IsolatedAsyncioTestCase):
             encode_runtime_inputs(values),
         )
         self.assertEqual(captured_request.headers[RUN_ID_HEADER], "run-test")
+        self.assertEqual(
+            captured_request.headers[RUNTIME_CREDENTIALS_HEADER],
+            encode_runtime_credentials({"authorization": "Bearer secret-user-token"}),
+        )
 
     async def test_regular_mcp_tool_also_receives_complete_inputs(self) -> None:
         """普通 MCP 工具在 Agent 中运行时也应获得相同的完整 inputs。"""

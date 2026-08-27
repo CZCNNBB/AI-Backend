@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Column, ForeignKey, String
+from sqlalchemy import BigInteger, Column, ForeignKey, String
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
@@ -19,6 +19,15 @@ class AgentConversation(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     conversation_id: str = Field(max_length=100, unique=True)
+    platform_id: int = Field(
+        sa_column=Column(
+            BigInteger,
+            ForeignKey("platform.business_platforms.id"),
+            nullable=False,
+            index=True,
+        )
+    )
+    external_user_id: str = Field(max_length=150, index=True)
     title: str | None = Field(default=None, max_length=255)
 
     status: str = Field(default="active", max_length=30)

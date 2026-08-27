@@ -14,7 +14,15 @@
       type="info"
       show-icon
       message="使用说明"
-      description="本页罗列 Agent 平台当前提供的全部 HTTP 接口。基础地址：{{ apiBaseUrl }}，所有接口统一返回 { code, msg, data } 三段结构。后续接口有新增或调整时,同步更新 src/views/docs/apiDocs.data.ts 即可。"
+      :description="`基础地址：${apiBaseUrl}。业务调用接口需要 X-API-Key；/agent/messages 还可以通过 X-Business-Authorization 透传业务用户 Token。管理接口供公司内网管理端使用。所有普通 JSON 接口统一返回 { code, msg, data }。`"
+    />
+
+    <a-alert
+      class="mb-4"
+      type="warning"
+      show-icon
+      message="外部业务平台接入顺序"
+      description="先在业务平台管理页创建平台并签发 API Key，再把 Agent 和 MCP Tool 绑定到该平台；业务后端调用 /agent/messages 时传 X-API-Key、稳定的 external_user_id，以及可选的 X-Business-Authorization。API Key 和业务 Token 都不应放在浏览器或移动端包中。"
     />
 
     <a-layout>
@@ -67,6 +75,18 @@
 
             <p class="api-summary">{{ api.summary }}</p>
 
+            <!-- 请求头单独展示，避免业务方把身份凭证误写进 JSON 请求体。 -->
+            <template v-if="api.headers?.length">
+              <h4 class="section-title">🔐 请求头</h4>
+              <a-table
+                :columns="fieldColumns"
+                :data-source="api.headers"
+                :pagination="false"
+                size="small"
+                row-key="name"
+              />
+            </template>
+
             <!-- 请求字段 -->
             <template v-if="api.requestFields.length">
               <h4 class="section-title">📥 请求参数</h4>
@@ -114,7 +134,7 @@
 
             <!-- 完整 URL 提示 -->
             <a-tag class="mt-3" color="cyan">
-              完整 URL：{{ apiBaseUrl }}/agent{{ api.path }}
+              完整 URL：{{ apiBaseUrl }}{{ api.path }}
             </a-tag>
           </a-card>
         </div>

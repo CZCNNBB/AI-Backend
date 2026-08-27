@@ -88,8 +88,11 @@ class AgentResumeService:
         # 这样即使用户在中断期间修改了 Agent 模板，也不会影响当前 checkpoint 的恢复。
         return AgentRunRequest(
             agent_id=getattr(run_row, "agent_id", None) or metadata.get("agent_id"),
+            platform_id=resume_request.platform_id,
+            external_user_id=resume_request.external_user_id,
+            runtime_credentials=resume_request.runtime_credentials,
             query=getattr(run_row, "query", None) or "继续执行中断任务",
-            conversation_id=resume_request.thread_id,
+            conversation_id=resume_request.conversation_id,
             stream=resume_request.stream,
             system_prompt=metadata.get("system_prompt"),
             inputs={},
@@ -124,10 +127,18 @@ class AgentResumeService:
         """
         a2a_sub_agent_list = resolved_request.a2a.sub_agent_list if resolved_request.a2a else []
         return AgentRuntimeContext(
-            thread_id=resume_request.thread_id,
+            thread_id=resume_request.conversation_id,
+            checkpoint_thread_id=resume_request.thread_id,
             run_id=resume_request.run_id,
+            platform_id=resume_request.platform_id,
+            external_user_id=resume_request.external_user_id,
+            runtime_credentials=(
+                {"authorization": resume_request.runtime_credentials.authorization}
+                if resume_request.runtime_credentials.authorization
+                else {}
+            ),
             query=getattr(run_row, "query", None) or resolved_request.query,
-            sys_var={"thread_id": resume_request.thread_id, "run_id": resume_request.run_id},
+            sys_var={"thread_id": resume_request.conversation_id, "run_id": resume_request.run_id},
             user_var=resolved_request.inputs,
             inputs=resolved_request.inputs,
             file_ids=resolved_request.file_ids,
@@ -157,13 +168,18 @@ class AgentResumeService:
         Raises:
             RuntimeError: 运行不存在、状态不正确或 thread_id 不匹配时抛出。
         """
-        run_row = self.run_service.get_by_run_id(db, resume_request.run_id)
+        run_row = self.run_service.get_by_run_id_for_owner(
+            db,
+            run_id=resume_request.run_id,
+            platform_id=resume_request.platform_id,
+            external_user_id=resume_request.external_user_id,
+        )
         if run_row is None:
             raise RuntimeError(f"Agent 运行记录不存在: {resume_request.run_id}")
         if run_row.status != "interrupted":
             raise RuntimeError(f"Agent 运行状态不是 interrupted，当前状态: {run_row.status}")
-        if run_row.conversation_id and run_row.conversation_id != resume_request.thread_id:
-            raise RuntimeError("resume thread_id 与原运行 conversation_id 不一致")
+        if run_row.conversation_id and run_row.conversation_id != resume_request.conversation_id:
+            raise RuntimeError("resume conversation_id 与原运行 conversation_id 不一致")
         return run_row
 
     async def _finalize_resume_run(
@@ -290,7 +306,7 @@ class AgentResumeService:
             result = await assembly.agent.ainvoke(
                 Command(resume=request.resume_value),
                 config={
-                    "configurable": {"thread_id": context.thread_id},
+                    "configurable": {"thread_id": context.checkpoint_thread_id},
                     "recursion_limit": get_agent_runtime_settings().recursion_limit,
                 },
                 context=context.to_langchain_context(),
@@ -312,7 +328,11 @@ class AgentResumeService:
             answer=answer,
             elapsed_ms=elapsed_ms,
         )
-        return AgentRunResponse(run_id=context.run_id, answer=answer)
+        return AgentRunResponse(
+            run_id=context.run_id,
+            conversation_id=context.thread_id,
+            answer=answer,
+        )
 
     async def resume_stream(
         self,
@@ -346,6 +366,8 @@ class AgentResumeService:
                 "type": "resume_start",
                 "data": {
                     "run_id": context.run_id,
+                    # 恢复运行继续沿用原业务会话 ID，方便外部系统统一处理开始事件。
+                    "conversation_id": context.thread_id,
                     "thread_id": context.thread_id,
                     "stream": True,
                 },
@@ -367,7 +389,7 @@ class AgentResumeService:
             async for stream_chunk in assembly.agent.astream(
                 Command(resume=request.resume_value),
                 config={
-                    "configurable": {"thread_id": context.thread_id},
+                    "configurable": {"thread_id": context.checkpoint_thread_id},
                     "recursion_limit": get_agent_runtime_settings().recursion_limit,
                 },
                 context=context.to_langchain_context(),

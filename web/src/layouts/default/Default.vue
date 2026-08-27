@@ -18,6 +18,11 @@
     </a-layout-sider>
 
     <a-layout>
+      <!-- 管理功能无需登录；这里单独配置模拟外部业务调用时使用的身份。 -->
+      <a-layout-header class="debug-header">
+        <span class="debug-title">业务调用调试环境</span>
+        <BusinessDebugContext />
+      </a-layout-header>
       <!-- 内容区 -->
       <a-layout-content class="layout-content">
         <slot />
@@ -34,6 +39,7 @@
  */
 import { computed, ref, type Component } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import BusinessDebugContext from '@/components/BusinessDebugContext.vue'
 import {
   DashboardOutlined,
   RobotOutlined,
@@ -71,6 +77,7 @@ const menuItems = ref<MenuItem[]>([
   { path: '/conversations', title: '会话历史', icon: MessageOutlined, group: '会话' },
   { path: '/runs', title: '运行监控', icon: LineChartOutlined, group: '监控' },
   { path: '/knowledge', title: '知识库', icon: DatabaseOutlined, group: '运维' },
+  { path: '/platforms', title: '业务平台', icon: ApartmentOutlined, group: '运维' },
   { path: '/tools', title: '工具管理', icon: ToolOutlined, group: '运维' },
   { path: '/settings/model', title: '模型配置', icon: SettingOutlined, group: '运维' },
   { path: '/a2a', title: 'A2A 拓扑', icon: ApartmentOutlined, group: '运维' },
@@ -124,5 +131,20 @@ function onMenuClick({ key }: { key: string }) {
   background: #fff;
   border-radius: 8px;
   min-height: calc(100vh - 32px);
+}
+.debug-header {
+  height: 52px;
+  padding: 0 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #273247;
+  background: #fff;
+  border-bottom: 1px solid #edf0f4;
+  line-height: normal;
+}
+.debug-title {
+  font-size: 13px;
+  font-weight: 600;
 }
 </style>

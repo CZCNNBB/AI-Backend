@@ -27,6 +27,7 @@ class AgentRuntimeContextService:
         # 如果调用方传入 conversation_id，Agent 会沿用该会话的 checkpoint 记忆；
         # 如果 conversation_id 为空，则生成临时 thread_id，适合 A2A 子 Agent 或一次性任务。
         thread_id = request.conversation_id or uuid4().hex
+        checkpoint_thread_id = self._build_checkpoint_thread_id(request, thread_id)
 
         # run_id 负责“单次 Agent 调用”维度。
         # 同一个 thread_id 可以有多次用户调用，checkpoint 会保留跨轮 state，
@@ -41,7 +42,11 @@ class AgentRuntimeContextService:
 
         return AgentRuntimeContext(
             thread_id=thread_id,
+            checkpoint_thread_id=checkpoint_thread_id,
             run_id=run_id,
+            platform_id=request.platform_id,
+            external_user_id=request.external_user_id,
+            runtime_credentials=self._build_runtime_credentials(request),
             query=request.query,
             sys_var={"thread_id": thread_id, "run_id": run_id},
             user_var=request.inputs,
@@ -55,6 +60,26 @@ class AgentRuntimeContextService:
             knowledge_base_ids=(request.knowledge.knowledge_base_ids if request.knowledge else []),
             a2a_sub_agent_list=a2a_sub_agent_list,
         )
+
+    @staticmethod
+    def _build_checkpoint_thread_id(request: AgentRunRequest, conversation_id: str) -> str:
+        """构建带平台、用户和会话命名空间的内部 Checkpoint thread_id。"""
+        if request.platform_id is None or not request.external_user_id:
+            # A2A 等一次性内部任务不启用 Checkpointer，可以继续使用随机线程 ID。
+            return conversation_id
+        return (
+            f"platform:{request.platform_id}:"
+            f"user:{request.external_user_id}:"
+            f"conversation:{conversation_id}"
+        )
+
+    @staticmethod
+    def _build_runtime_credentials(request: AgentRunRequest) -> dict[str, str]:
+        """复制本次运行凭证，避免后续代码持有请求模型本身。"""
+        authorization = request.runtime_credentials.authorization
+        if not authorization:
+            return {}
+        return {"authorization": authorization}
 
     def get_context_schema(self):
         """获取 LangChain Agent 运行时上下文 schema。

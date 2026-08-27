@@ -7,7 +7,7 @@ HTTPMethod = Literal["GET", "POST", "PUT", "PATCH", "DELETE"]
 ParameterLocation = Literal["path", "query", "header", "body"]
 ParameterSource = Literal["tool", "runtime", "static"]
 ParameterType = Literal["string", "integer", "number", "boolean", "object", "array"]
-AuthType = Literal["none", "bearer", "basic", "api_key"]
+AuthType = Literal["none", "bearer", "basic", "api_key", "runtime_bearer"]
 RecordStatus = Literal["draft", "enabled", "disabled"]
 
 
@@ -72,6 +72,11 @@ class MCPToolUpsertRequest(BaseModel):
 
     name: str = Field(..., min_length=1, max_length=150, description="Agent 配置引用的 MCP Tool 名称")
     description: str | None = Field(default=None, description="工具用途说明")
+    platform_ids: list[int] = Field(
+        ...,
+        min_length=1,
+        description="MCP Tool 绑定的业务平台 ID；一个工具可以绑定多个平台",
+    )
     api_url: str = Field(..., min_length=1, description="目标业务 HTTP API 完整地址")
     http_method: HTTPMethod = Field(default="POST", description="目标 API 请求方法")
     static_headers: dict[str, Any] = Field(default_factory=dict, description="固定发送的 HTTP 请求头")
@@ -246,6 +251,7 @@ class MCPToolView(BaseModel):
     id: int | None = None
     name: str
     description: str | None = None
+    platform_ids: list[int] = Field(default_factory=list)
     api_url: str
     http_method: str
     static_headers: dict[str, Any] = Field(default_factory=dict)
@@ -267,6 +273,16 @@ class MCPToolSearchResponse(BaseModel):
     page: int = 1
     page_size: int = 20
     items: list[MCPToolView] = Field(default_factory=list)
+
+
+class MCPToolEligibleRequest(BaseModel):
+    """根据 Agent 业务平台集合查询可挂载 MCP Tool 的请求。"""
+
+    platform_ids: list[int] = Field(
+        ...,
+        min_length=1,
+        description="Agent 已绑定的业务平台 ID 集合",
+    )
 
 
 class MCPToolTestResponse(BaseModel):

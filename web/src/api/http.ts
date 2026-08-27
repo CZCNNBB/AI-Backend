@@ -4,6 +4,7 @@
  */
 import axios, { type AxiosInstance, type AxiosRequestConfig, type AxiosResponse, type InternalAxiosRequestConfig } from 'axios'
 import { message } from 'ant-design-vue'
+import { buildBusinessDebugHeaders } from '@/utils/businessDebugContext'
 
 /** 创建 Axios 实例，默认指向本地后端 */
 const http: AxiosInstance = axios.create({
@@ -12,8 +13,27 @@ const http: AxiosInstance = axios.create({
   headers: { 'Content-Type': 'application/json' },
 })
 
-/** 请求拦截器：注入 token 等通用头 */
+/** 判断请求是否需要模拟外部业务平台身份。 */
+function isBusinessIdentityRequest(url: string): boolean {
+  return url.startsWith('/agent/messages')
+    || url.startsWith('/agent/runs/')
+    || url.startsWith('/agent/conversations/')
+}
+
+/** 请求拦截器：只给业务身份视角接口注入平台凭证。 */
 http.interceptors.request.use((config: InternalAxiosRequestConfig) => {
+  const requestUrl = config.url || ''
+  if (!isBusinessIdentityRequest(requestUrl)) {
+    return config
+  }
+
+  // 业务 Token 只允许发送给真正执行 Agent 的消息接口，运行和会话查询不需要它。
+  const headers = buildBusinessDebugHeaders(requestUrl.startsWith('/agent/messages'))
+  for (const [headerName, headerValue] of Object.entries(headers)) {
+    if (!config.headers.has(headerName)) {
+      config.headers.set(headerName, headerValue)
+    }
+  }
   return config
 })
 

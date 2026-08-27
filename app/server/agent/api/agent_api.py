@@ -1,7 +1,9 @@
 import json
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, Header
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session
@@ -17,6 +19,7 @@ from app.server.agent.src.schemas.response import AgentCapabilityResponse, Agent
 from app.server.agent.src.tools.schemas import AgentToolInfo
 from app.server.fastmcp.src.schemas import MCPToolSearchRequest
 from app.server.fastmcp.src.service import MCPToolService
+from app.server.platform.src import PlatformPrincipal, get_platform_principal
 
 
 router = APIRouter()
@@ -131,7 +134,14 @@ def _format_sse_event(event: dict[str, Any]) -> str:
 
 
 @router.post("/messages", response_model=Result[AgentRunResponse], summary="发送 Agent 消息")
-async def send_agent_message(request: AgentMessageRequest):
+async def send_agent_message(
+    request: AgentMessageRequest,
+    principal: PlatformPrincipal = Depends(get_platform_principal),
+    business_authorization: Annotated[
+        str | None,
+        Header(alias="X-Business-Authorization"),
+    ] = None,
+):
     """统一 Agent 消息入口。
 
     前端只需要调用该接口：
@@ -144,7 +154,11 @@ async def send_agent_message(request: AgentMessageRequest):
     if request.stream:
         async def event_generator():
             """按 SSE 格式逐条产出 Agent 消息处理事件。"""
-            async for event in agent_message_service.stream_message(request):
+            async for event in agent_message_service.stream_message(
+                request,
+                principal=principal,
+                business_authorization=business_authorization,
+            ):
                 yield _format_sse_event(event)
 
         return StreamingResponse(
@@ -157,5 +171,9 @@ async def send_agent_message(request: AgentMessageRequest):
             },
         )
 
-    result = await agent_message_service.run_message(request)
+    result = await agent_message_service.run_message(
+        request,
+        principal=principal,
+        business_authorization=business_authorization,
+    )
     return Result.success(result)

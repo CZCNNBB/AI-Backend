@@ -14,6 +14,7 @@ from app.server.agent.src.schemas.request import (
     AgentRunRequest,
     ModelRuntimeOptions,
 )
+from app.server.platform.src.schemas import PlatformPrincipal
 from app.server.agent.src.tools.knowledge_tools import search_knowledge_base
 from app.server.knowledge.src.retrieval.schemas import RetrievalOutput, RetrievalResult
 
@@ -41,11 +42,22 @@ class AgentKnowledgeToolTestCase(unittest.IsolatedAsyncioTestCase):
         )
         request = AgentMessageRequest(
             agent_id="agent-one",
+            external_user_id="user-one",
             message="查询知识",
             knowledge=AgentKnowledgeConfig(knowledge_base_ids=["kb_one"]),
         )
 
-        run_request = message_service._build_run_request(request, stream=True)
+        run_request = message_service._build_run_request(
+            request,
+            principal=PlatformPrincipal(
+                platform_id=1,
+                platform_code="test-platform",
+                platform_name="测试平台",
+                api_key_id=1,
+            ),
+            business_authorization=None,
+            stream=True,
+        )
 
         self.assertIsNotNone(run_request.knowledge)
         self.assertEqual(run_request.knowledge.knowledge_base_ids, ["kb_one"])

@@ -75,6 +75,9 @@ async def a2a_call(agent_id: str, query: str, runtime: ToolRuntime) -> str:
     parent_run_id = None
     parent_inputs: dict = {}
     parent_knowledge_base_ids: list[str] = []
+    parent_platform_id: int | None = None
+    parent_external_user_id: str | None = None
+    parent_runtime_credentials: dict[str, str] = {}
     parent_tool_call_id = getattr(runtime, "tool_call_id", None) if runtime is not None else None
     if runtime is not None:
         ctx = getattr(runtime, "context", None) or {}
@@ -83,12 +86,21 @@ async def a2a_call(agent_id: str, query: str, runtime: ToolRuntime) -> str:
             parent_run_id = str(ctx.get("run_id") or "") or None
             parent_inputs = dict(ctx.get("inputs") or {})
             parent_knowledge_base_ids = list(ctx.get("knowledge_base_ids") or [])
+            parent_platform_id = ctx.get("platform_id")
+            parent_external_user_id = str(ctx.get("external_user_id") or "") or None
+            parent_runtime_credentials = dict(ctx.get("runtime_credentials") or {})
         elif hasattr(ctx, "model_dump"):
             context_data = ctx.model_dump()
             parent_conversation_id = str(context_data.get("thread_id") or "") or None
             parent_run_id = str(context_data.get("run_id") or "") or None
             parent_inputs = dict(context_data.get("inputs") or {})
             parent_knowledge_base_ids = list(context_data.get("knowledge_base_ids") or [])
+            parent_platform_id = context_data.get("platform_id")
+            parent_external_user_id = str(context_data.get("external_user_id") or "") or None
+            parent_runtime_credentials = dict(context_data.get("runtime_credentials") or {})
+
+    if parent_platform_id is None or not parent_external_user_id:
+        return "错误：A2A 调用缺少业务平台或外部用户身份。"
 
     sub_run_id = uuid4().hex
     sub_started_at = time.perf_counter()
@@ -106,9 +118,20 @@ async def a2a_call(agent_id: str, query: str, runtime: ToolRuntime) -> str:
         if not config.is_sub_agent:
             return f"错误：Agent {agent_id} 未声明为可被 A2A 调用的子 Agent。"
 
+        # 子 Agent 必须同样分配给当前业务平台，避免主 Agent 绕过入口绑定调用其他平台 Agent。
+        from app.server.platform.src.service import BusinessPlatformService
+
+        BusinessPlatformService().require_agent_binding(
+            db,
+            agent_id=agent_id,
+            platform_id=parent_platform_id,
+        )
+
         AgentRunService().create_running(
             db,
             run_id=sub_run_id,
+            platform_id=parent_platform_id,
+            external_user_id=parent_external_user_id,
             run_type="sub",
             parent_run_id=parent_run_id,
             agent_id=agent_id,
@@ -119,7 +142,12 @@ async def a2a_call(agent_id: str, query: str, runtime: ToolRuntime) -> str:
 
     # 子 Agent 不传 conversation_id，因此 AgentAssembler 不会挂 PostgreSQL checkpointer。
     # A2A 子 Agent 不写 agent_conversations/agent_messages，也不额外创建主运行记录。
+    from app.server.agent.src.schemas.request import AgentRuntimeCredentials
+
     sub_request = AgentRunRequest(
+        platform_id=parent_platform_id,
+        external_user_id=parent_external_user_id,
+        runtime_credentials=AgentRuntimeCredentials(**parent_runtime_credentials),
         query=query,
         conversation_id=None,
         system_prompt=config.system_prompt,

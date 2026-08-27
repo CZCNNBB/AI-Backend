@@ -14,6 +14,7 @@ from app.server.fastmcp.src.schemas import MCPToolParameter, MCPToolView
 
 
 RUNTIME_INPUTS_HEADER = "x-agent-runtime-inputs"
+RUNTIME_CREDENTIALS_HEADER = "x-agent-runtime-credentials"
 
 
 @dataclass(frozen=True)
@@ -33,12 +34,16 @@ class HTTPAPIToolExecutor:
         tool: MCPToolView,
         arguments: dict[str, Any],
         runtime_inputs: dict[str, Any] | None = None,
+        runtime_credentials: dict[str, str] | None = None,
     ) -> HTTPToolExecutionResult:
         """组装并调用目标 API，返回状态码、耗时和响应数据。"""
         resolved_runtime_inputs = runtime_inputs
         if resolved_runtime_inputs is None:
             # Agent 调用 MCP Endpoint 时，完整 inputs 由 Adapter 拦截器放入可信请求头。
             resolved_runtime_inputs = self._read_runtime_inputs_from_mcp_request()
+        resolved_runtime_credentials = runtime_credentials
+        if resolved_runtime_credentials is None:
+            resolved_runtime_credentials = self._read_runtime_credentials_from_mcp_request()
 
         request_url = tool.api_url
         request_headers = self._normalize_headers(tool.static_headers)
@@ -63,7 +68,12 @@ class HTTPAPIToolExecutor:
             elif parameter.location == "body":
                 self._set_nested_value(json_body, parameter.name, parameter_value)
 
-        self._apply_authentication(tool, request_headers, query_params)
+        self._apply_authentication(
+            tool,
+            request_headers,
+            query_params,
+            resolved_runtime_credentials,
+        )
 
         request_kwargs: dict[str, Any] = {
             "method": tool.http_method,
@@ -124,6 +134,7 @@ class HTTPAPIToolExecutor:
         tool: MCPToolView,
         headers: dict[str, str],
         query_params: dict[str, Any],
+        runtime_credentials: dict[str, str],
     ) -> None:
         """把平台保存的认证配置注入请求，认证值不会暴露给 Agent。"""
         auth_config = tool.auth_config or {}
@@ -135,6 +146,16 @@ class HTTPAPIToolExecutor:
             if not token:
                 raise RuntimeError("Bearer 认证缺少 auth_config.token")
             headers["Authorization"] = f"Bearer {token}"
+            return
+
+        if tool.auth_type == "runtime_bearer":
+            authorization = str(runtime_credentials.get("authorization") or "").strip()
+            if not authorization:
+                raise RuntimeError("当前调用未提供业务平台用户凭证")
+            # 调用方推荐传入完整的 Bearer 值；只传裸 Token 时在此统一补齐前缀。
+            if " " not in authorization:
+                authorization = f"Bearer {authorization}"
+            headers["Authorization"] = authorization
             return
 
         if tool.auth_type == "basic":
@@ -176,6 +197,31 @@ class HTTPAPIToolExecutor:
         except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
             raise RuntimeError("Agent Runtime inputs 请求头格式无效") from None
         return dict(parsed_payload) if isinstance(parsed_payload, dict) else {}
+
+    @staticmethod
+    def _read_runtime_credentials_from_mcp_request() -> dict[str, str]:
+        """从当前 FastMCP HTTP 请求头解码独立的运行时凭证。"""
+        try:
+            request_headers = get_http_headers(include_all=True)
+        except RuntimeError:
+            # 管理接口直接执行时不存在 MCP 请求上下文，由调用方显式提供测试凭证。
+            return {}
+
+        encoded_credentials = request_headers.get(RUNTIME_CREDENTIALS_HEADER)
+        if not encoded_credentials:
+            return {}
+        try:
+            decoded_payload = base64.urlsafe_b64decode(encoded_credentials.encode("ascii"))
+            parsed_payload = json.loads(decoded_payload.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+            raise RuntimeError("Agent Runtime credentials 请求头格式无效") from None
+        if not isinstance(parsed_payload, dict):
+            return {}
+        return {
+            str(key): str(value)
+            for key, value in parsed_payload.items()
+            if value not in (None, "")
+        }
 
     @staticmethod
     def _read_nested_value(data: dict[str, Any], dotted_path: str) -> tuple[bool, Any]:
