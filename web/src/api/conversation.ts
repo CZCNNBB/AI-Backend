@@ -9,6 +9,7 @@ import { readBusinessDebugContext } from '@/utils/businessDebugContext'
 export interface Conversation {
   conversation_id: string
   external_user_id: string
+  agent_id: string
   title?: string | null
   status: string
   created_at?: string
@@ -29,11 +30,13 @@ export interface ConversationMessage {
   tool_call_id?: string | null
   parent_message_id?: string | null
   status?: string
+  error_message?: string | null
   created_at?: string
 }
 
 /** /agent/conversations/search 请求体 */
 export interface ConversationSearchRequest {
+  agent_id?: string
   conversation_id?: string
   page?: number
   page_size?: number

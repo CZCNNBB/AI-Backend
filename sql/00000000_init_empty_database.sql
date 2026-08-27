@@ -128,6 +128,7 @@ CREATE TABLE IF NOT EXISTS agent.agent_conversations (
     conversation_id VARCHAR(100) NOT NULL UNIQUE,
     platform_id BIGINT NOT NULL REFERENCES platform.business_platforms(id),
     external_user_id VARCHAR(150) NOT NULL,
+    agent_id VARCHAR(100) NOT NULL,
     title VARCHAR(255),
     status VARCHAR(30) NOT NULL DEFAULT 'active',
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -144,6 +145,9 @@ ON agent.agent_conversations(updated_at);
 CREATE INDEX IF NOT EXISTS idx_agent_conversations_platform_user
 ON agent.agent_conversations(platform_id, external_user_id, updated_at DESC);
 
+CREATE INDEX IF NOT EXISTS idx_agent_conversations_platform_user_agent
+ON agent.agent_conversations(platform_id, external_user_id, agent_id, updated_at DESC);
+
 CREATE INDEX IF NOT EXISTS idx_agent_conversations_owner
 ON agent.agent_conversations(platform_id, external_user_id, conversation_id);
 
@@ -151,6 +155,7 @@ COMMENT ON TABLE agent.agent_conversations IS 'Agent 会话主表：记录一个
 COMMENT ON COLUMN agent.agent_conversations.conversation_id IS '会话唯一标识。';
 COMMENT ON COLUMN agent.agent_conversations.platform_id IS '会话所属业务平台。';
 COMMENT ON COLUMN agent.agent_conversations.external_user_id IS '业务平台中的稳定用户 ID。';
+COMMENT ON COLUMN agent.agent_conversations.agent_id IS '会话所属 Agent 模板的稳定业务 ID。';
 COMMENT ON COLUMN agent.agent_conversations.metadata IS '会话扩展元数据。';
 
 CREATE TABLE IF NOT EXISTS agent.agent_messages (

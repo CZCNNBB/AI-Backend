@@ -7,6 +7,7 @@ class AgentConversationSearchRequest(BaseModel):
     """查询 Agent 会话列表的请求参数。"""
 
     external_user_id: str = Field(..., min_length=1, max_length=150, description="外部业务用户 ID")
+    agent_id: str | None = Field(default=None, min_length=1, max_length=100, description="可选 Agent 模板 ID")
     conversation_id: str | None = Field(default=None, description="可选会话 ID，传入时精确匹配")
     page: int = Field(default=1, ge=1, description="页码")
     page_size: int = Field(default=20, ge=1, le=100, description="每页数量")
@@ -25,6 +26,7 @@ class AgentConversationView(BaseModel):
 
     conversation_id: str = Field(..., description="会话 ID")
     external_user_id: str = Field(..., description="外部业务用户 ID")
+    agent_id: str = Field(..., description="该会话所属的 Agent 模板 ID")
     title: str | None = Field(default=None, description="会话标题")
     status: str = Field(default="active", description="会话状态")
     metadata: dict[str, Any] = Field(default_factory=dict, description="会话扩展元数据")
@@ -79,3 +81,4 @@ class ContextMessageView(BaseModel):
     status: str = "success"
     error_message: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: str | None = Field(default=None, description="消息创建时间")

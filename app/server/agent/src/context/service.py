@@ -2,6 +2,7 @@ from uuid import uuid4
 
 from sqlmodel import Session
 
+from app.common.core.exceptions import BusinessException
 from app.server.agent.src.context.models import AgentConversation, AgentMessage
 from app.server.agent.src.context.repository import AgentContextRepository
 from app.server.agent.src.context.schemas import (
@@ -31,6 +32,7 @@ class AgentContextService:
         *,
         platform_id: int,
         external_user_id: str,
+        agent_id: str,
         conversation_id: str,
         title: str | None = None,
         metadata: dict | None = None,
@@ -40,6 +42,7 @@ class AgentContextService:
 
         Args:
             db: 数据库会话。
+            agent_id: 创建或继续该会话的 Agent 模板 ID。
             conversation_id: 会话 ID。
             title: 会话标题。
             metadata: 会话扩展元数据。
@@ -54,12 +57,22 @@ class AgentContextService:
             conversation_id=conversation_id,
         )
         if conversation:
+            if conversation.agent_id != agent_id:
+                # 同一个 conversation_id 对应一份 Checkpoint 状态，不能更换 Agent 后继续使用。
+                raise BusinessException(
+                    code=409,
+                    msg=(
+                        f"会话 {conversation_id} 属于 Agent {conversation.agent_id}，"
+                        f"不能使用 Agent {agent_id} 继续执行"
+                    ),
+                )
             return self.repository.touch_conversation(db, conversation)
 
         conversation = AgentConversation(
             conversation_id=conversation_id,
             platform_id=platform_id,
             external_user_id=external_user_id,
+            agent_id=agent_id,
             title=title,
             extra_metadata=metadata or {},
         )
@@ -350,6 +363,7 @@ class AgentContextService:
                 status=message.status,
                 error_message=message.error_message,
                 metadata=message.extra_metadata,
+                created_at=message.created_at.isoformat() if message.created_at else None,
             )
             for message in messages
         ]
@@ -375,6 +389,7 @@ class AgentContextService:
             db,
             platform_id=platform_id,
             external_user_id=request.external_user_id,
+            agent_id=request.agent_id,
             conversation_id=request.conversation_id,
             page=request.page,
             page_size=request.page_size,
@@ -384,6 +399,7 @@ class AgentContextService:
             AgentConversationView(
                 conversation_id=row.conversation_id,
                 external_user_id=row.external_user_id,
+                agent_id=row.agent_id,
                 title=row.title,
                 status=row.status,
                 metadata=row.extra_metadata,

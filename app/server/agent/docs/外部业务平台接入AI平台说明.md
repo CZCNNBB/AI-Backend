@@ -326,6 +326,15 @@ platform:{platform_id}:user:{external_user_id}:conversation:{conversation_id}
 
 以下接口都需要请求头 `X-API-Key`，并且请求体必须携带 `external_user_id`。
 
+外部业务平台读取聊天历史时使用固定的两步流程：
+
+```text
+1. external_user_id → 查询该用户的会话列表
+2. external_user_id + conversation_id → 查询某条会话的详细消息历史
+```
+
+业务平台只需要维护自己的用户 ID，不需要另外维护完整的用户与会话映射。
+
 ### 8.1 查询用户会话
 
 ```http
@@ -335,12 +344,18 @@ POST /agent/conversations/search
 ```json
 {
   "external_user_id": "user_10086",
+  "agent_id": "order-agent",
   "page": 1,
   "page_size": 20
 }
 ```
 
-业务方不必自己保存完整的用户与会话关系，也可以按 `external_user_id` 从 AI-backend 查询该用户的会话列表。
+`agent_id` 是可选过滤条件：
+
+- 不传 `agent_id`：返回当前平台下该用户的全部会话。
+- 传 `agent_id`：只返回该用户与指定 Agent 的会话，适合嵌入某个 Agent 的聊天页面。
+
+响应中的每条会话都包含 `conversation_id` 和 `agent_id`。业务方使用选中会话的 `conversation_id` 进入第二步。
 
 ### 8.2 查询会话消息
 

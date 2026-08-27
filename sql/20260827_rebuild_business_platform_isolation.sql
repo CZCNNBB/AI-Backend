@@ -64,16 +64,21 @@ ON platform.business_platform_api_keys(platform_id);
 -- 旧会话数据已经清空，因此直接添加非空归属字段，不保留 nullable 过渡状态。
 ALTER TABLE agent.agent_conversations
 DROP COLUMN IF EXISTS platform_id,
-DROP COLUMN IF EXISTS external_user_id;
+DROP COLUMN IF EXISTS external_user_id,
+DROP COLUMN IF EXISTS agent_id;
 
 ALTER TABLE agent.agent_conversations
 ADD COLUMN platform_id BIGINT NOT NULL,
 ADD COLUMN external_user_id VARCHAR(150) NOT NULL,
+ADD COLUMN agent_id VARCHAR(100) NOT NULL,
 ADD CONSTRAINT fk_agent_conversations_platform
     FOREIGN KEY (platform_id) REFERENCES platform.business_platforms(id);
 
 CREATE INDEX idx_agent_conversations_platform_user
 ON agent.agent_conversations(platform_id, external_user_id, updated_at DESC);
+
+CREATE INDEX idx_agent_conversations_platform_user_agent
+ON agent.agent_conversations(platform_id, external_user_id, agent_id, updated_at DESC);
 
 CREATE INDEX idx_agent_conversations_owner
 ON agent.agent_conversations(platform_id, external_user_id, conversation_id);
@@ -125,6 +130,7 @@ COMMENT ON TABLE platform.business_platform_agents IS '业务平台与 Agent 模
 COMMENT ON TABLE platform.business_platform_mcp_tools IS '业务平台与 MCP Tool 的多对多绑定。';
 COMMENT ON COLUMN agent.agent_conversations.platform_id IS '会话所属业务平台。';
 COMMENT ON COLUMN agent.agent_conversations.external_user_id IS '业务平台中的稳定用户 ID。';
+COMMENT ON COLUMN agent.agent_conversations.agent_id IS '会话所属 Agent 模板的稳定业务 ID。';
 COMMENT ON COLUMN agent.agent_runs.platform_id IS '运行所属业务平台。';
 COMMENT ON COLUMN agent.agent_runs.external_user_id IS '业务平台中的稳定用户 ID。';
 COMMENT ON COLUMN mcp.mcp_tools.auth_type IS '目标 API 认证类型；runtime_bearer 表示使用本次 Agent 请求的业务用户 Token。';

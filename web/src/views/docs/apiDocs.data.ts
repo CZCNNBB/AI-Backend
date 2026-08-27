@@ -526,15 +526,16 @@ data: {"type":"run_end","data":{"status":"succeeded"}}`,
     headers: platformIdentityHeaders,
     requestFields: [
       { name: 'external_user_id', type: 'string', required: true, description: '外部业务用户 ID' },
+      { name: 'agent_id', type: 'string', description: '可选 Agent ID；不传时返回该用户在当前平台的全部会话' },
       { name: 'conversation_id', type: 'string', description: '可选，会话 ID 精确匹配' },
       { name: 'page', type: 'number', description: '页码', example: 1 },
       { name: 'page_size', type: 'number', description: '每页数量', example: 20 },
     ],
     responseFields: [
       { name: 'total', type: 'number', description: '总数量' },
-      { name: 'items', type: 'object[]', description: '会话列表' },
+      { name: 'items', type: 'object[]', description: '会话列表；每项包含 conversation_id、agent_id、标题和更新时间' },
     ],
-    requestExample: `{ "external_user_id": "user_10086", "page": 1, "page_size": 20 }`,
+    requestExample: `{ "external_user_id": "user_10086", "agent_id": "order-agent", "page": 1, "page_size": 20 }`,
     responseExample: `{
   "code": 0,
   "msg": "success",

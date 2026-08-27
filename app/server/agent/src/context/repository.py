@@ -90,6 +90,7 @@ class AgentContextRepository:
         *,
         platform_id: int,
         external_user_id: str,
+        agent_id: str | None,
         conversation_id: str | None,
         page: int,
         page_size: int,
@@ -99,6 +100,7 @@ class AgentContextRepository:
 
         Args:
             db: 数据库会话。
+            agent_id: 可选 Agent 模板 ID；提供时只查询该 Agent 的会话。
             conversation_id: 会话 ID，精确匹配。
 
         Returns:
@@ -108,6 +110,8 @@ class AgentContextRepository:
             AgentConversation.platform_id == platform_id,
             AgentConversation.external_user_id == external_user_id,
         ]
+        if agent_id:
+            conditions.append(AgentConversation.agent_id == agent_id)
         if conversation_id:
             conditions.append(AgentConversation.conversation_id == conversation_id)
         base_sql = select(AgentConversation).where(*conditions)

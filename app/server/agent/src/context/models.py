@@ -28,6 +28,7 @@ class AgentConversation(SQLModel, table=True):
         )
     )
     external_user_id: str = Field(max_length=150, index=True)
+    agent_id: str = Field(max_length=100, index=True)
     title: str | None = Field(default=None, max_length=255)
 
     status: str = Field(default="active", max_length=30)

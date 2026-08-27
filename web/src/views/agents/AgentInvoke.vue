@@ -35,6 +35,14 @@
         >
           <template #suffixIcon><ApiOutlined /></template>
         </a-select>
+        <a-button
+          class="history-btn"
+          :disabled="!selectedAgentId || running"
+          @click="openConversationHistory"
+        >
+          <template #icon><HistoryOutlined /></template>
+          会话历史
+        </a-button>
         <a-tooltip title="新建会话">
           <a-button class="icon-btn" @click="newConversation">
             <template #icon><PlusOutlined /></template>
@@ -60,8 +68,7 @@
       />
       <a-input-password
         v-model:value="platformApiKey"
-        placeholder="所选平台尚未签发可用 API Key"
-        readonly
+        placeholder="自动回填失败时，可手动粘贴平台 API Key"
         class="credential-input"
       />
       <a-input
@@ -396,6 +403,67 @@
         <span v-else>👈 请先选择 Agent</span>
       </div>
     </div>
+
+    <a-drawer
+      v-model:open="conversationHistoryOpen"
+      title="当前用户的会话历史"
+      placement="right"
+      :width="430"
+    >
+      <a-alert
+        type="info"
+        show-icon
+        class="conversation-history-tip"
+        :message="`${agentName} / ${externalUserId || '未填写外部用户 ID'}`"
+        description="这里只展示当前业务平台、当前外部用户与当前 Agent 共同对应的会话。"
+      />
+
+      <div class="conversation-history-toolbar">
+        <span>共 {{ conversationHistoryTotal }} 条会话</span>
+        <a-button size="small" :loading="conversationHistoryLoading" @click="loadConversationHistory()">
+          <template #icon><ReloadOutlined /></template>
+          刷新
+        </a-button>
+      </div>
+
+      <a-spin :spinning="conversationHistoryLoading">
+        <a-empty v-if="!conversationHistoryItems.length" description="当前 Agent 暂无历史会话" />
+        <a-list v-else :data-source="conversationHistoryItems" class="conversation-history-list">
+          <template #renderItem="{ item }">
+            <a-list-item
+              :class="['conversation-history-item', { active: conversationId === item.conversation_id }]"
+              @click="openHistoricalConversation(item)"
+            >
+              <a-list-item-meta>
+                <template #title>
+                  <div class="conversation-history-title">
+                    <span>{{ item.title || '未命名会话' }}</span>
+                    <a-tag v-if="conversationId === item.conversation_id" color="blue">当前</a-tag>
+                  </div>
+                </template>
+                <template #description>
+                  <div class="conversation-history-description">
+                    <span :title="item.conversation_id">{{ shortConversationId(item.conversation_id) }}</span>
+                    <span>{{ formatConversationTime(item.updated_at) }}</span>
+                  </div>
+                </template>
+              </a-list-item-meta>
+              <a-spin v-if="openingConversationId === item.conversation_id" size="small" />
+            </a-list-item>
+          </template>
+        </a-list>
+      </a-spin>
+
+      <a-pagination
+        v-if="conversationHistoryTotal > conversationHistoryPageSize"
+        v-model:current="conversationHistoryPage"
+        :page-size="conversationHistoryPageSize"
+        :total="conversationHistoryTotal"
+        :show-size-changer="false"
+        class="conversation-history-pagination"
+        @change="loadConversationHistory"
+      />
+    </a-drawer>
   </div>
 </template>
 
@@ -412,7 +480,9 @@ import { message } from 'ant-design-vue'
 import {
   ApiOutlined,
   ClockCircleOutlined,
+  HistoryOutlined,
   PlusOutlined,
+  ReloadOutlined,
   SettingOutlined,
   SendOutlined,
   ThunderboltOutlined,
@@ -427,6 +497,12 @@ import {
 import { runAgentStream } from '@/api/agentRun'
 import { searchKnowledgeBases } from '@/api/knowledge'
 import { deleteAgentFiles, parseUploadedFile, uploadFiles, type UploadedFileView } from '@/api/file'
+import {
+  getConversationMessages,
+  searchConversations,
+  type Conversation,
+  type ConversationMessage,
+} from '@/api/conversation'
 import {
   getAgentPlatformAccessOptions,
   type AgentPlatformAccessOption,
@@ -466,6 +542,13 @@ const initialDebugContext = readBusinessDebugContext()
 const platformApiKey = ref(initialDebugContext.platformApiKey)
 const externalUserId = ref(initialDebugContext.externalUserId)
 const businessAuthorization = ref(initialDebugContext.businessAuthorization)
+const conversationHistoryOpen = ref(false)
+const conversationHistoryLoading = ref(false)
+const conversationHistoryItems = ref<Conversation[]>([])
+const conversationHistoryTotal = ref(0)
+const conversationHistoryPage = ref(1)
+const conversationHistoryPageSize = 20
+const openingConversationId = ref('')
 const input = ref('')
 const running = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
@@ -749,7 +832,9 @@ function applySelectedPlatformApiKey(): void {
   const selectedOption = platformAccessOptions.value.find(
     (option) => option.platform_id === selectedPlatformId.value,
   )
-  platformApiKey.value = selectedOption?.api_key || ''
+  if (selectedOption?.api_key) {
+    platformApiKey.value = selectedOption.api_key
+  }
   if (selectedOption && !selectedOption.api_key) {
     message.warning(`业务平台“${selectedOption.platform_name}”尚未签发可用 API Key`)
   }
@@ -757,6 +842,8 @@ function applySelectedPlatformApiKey(): void {
 
 /** 响应多平台 Agent 的平台下拉选择。 */
 function onPlatformChange(): void {
+  // 切换平台时不能继续沿用前一个平台的 Key；新平台无自动 Key 时由用户手动填写。
+  platformApiKey.value = ''
   applySelectedPlatformApiKey()
 }
 
@@ -770,12 +857,17 @@ async function onAgentChange(agentId?: string) {
   selectedKnowledgeBaseIds.value = []
   stickToBottom.value = true
   conversationId.value = ''
+  conversationHistoryOpen.value = false
+  conversationHistoryItems.value = []
+  conversationHistoryTotal.value = 0
+  platformApiKey.value = ''
   await loadAgentDetail(normalizedAgentId)
 }
 
 /** 顶部调试身份保存后，同步 Agent、平台、用户和业务 Token 到调用页。 */
 async function syncDebugContextToInvokePage(): Promise<void> {
   const context = readBusinessDebugContext()
+  const userChanged = externalUserId.value !== context.externalUserId
   externalUserId.value = context.externalUserId
   businessAuthorization.value = context.businessAuthorization
 
@@ -790,6 +882,17 @@ async function syncDebugContextToInvokePage(): Promise<void> {
   if (selectedOption) {
     selectedPlatformId.value = selectedOption.platform_id
     platformApiKey.value = selectedOption.api_key || context.platformApiKey
+  } else {
+    platformApiKey.value = context.platformApiKey
+  }
+
+  if (userChanged) {
+    // 外部用户变化后，旧 conversation_id 已不属于新用户，必须退出当前会话。
+    conversationId.value = ''
+    messages.value = []
+    conversationHistoryItems.value = []
+    conversationHistoryTotal.value = 0
+    conversationHistoryOpen.value = false
   }
 }
 
@@ -801,6 +904,139 @@ function newConversation() {
   uploadedFiles.value = []
   stickToBottom.value = true
   message.success('已新建会话')
+}
+
+/** 保存调用页当前业务身份，供会话接口和 Agent 消息接口统一注入请求头。 */
+function persistCurrentBusinessIdentity(): boolean {
+  if (!selectedAgentId.value || !platformApiKey.value.trim() || !externalUserId.value.trim()) {
+    message.warning('请先确认 Agent、平台 API Key 和外部用户 ID')
+    return false
+  }
+
+  const selectedPlatform = platformAccessOptions.value.find(
+    (platform) => platform.platform_id === selectedPlatformId.value,
+  )
+  const previousContext = readBusinessDebugContext()
+  saveBusinessDebugContext({
+    agentId: selectedAgentId.value,
+    platformId: selectedPlatform?.platform_id ?? null,
+    platformName: selectedPlatform?.platform_name || previousContext.platformName,
+    platformApiKey: platformApiKey.value.trim(),
+    externalUserId: externalUserId.value.trim(),
+    businessAuthorization: businessAuthorization.value.trim(),
+  })
+  return true
+}
+
+/** 打开当前 Agent 和外部用户对应的历史会话抽屉。 */
+async function openConversationHistory(): Promise<void> {
+  if (!persistCurrentBusinessIdentity()) return
+  conversationHistoryOpen.value = true
+  conversationHistoryPage.value = 1
+  await loadConversationHistory(1)
+}
+
+/** 分页加载当前平台、外部用户和 Agent 共同对应的会话。 */
+async function loadConversationHistory(page = conversationHistoryPage.value): Promise<void> {
+  if (!selectedAgentId.value) return
+  conversationHistoryLoading.value = true
+  try {
+    conversationHistoryPage.value = page
+    const response = await searchConversations({
+      agent_id: selectedAgentId.value,
+      page,
+      page_size: conversationHistoryPageSize,
+    })
+    conversationHistoryItems.value = response.items || []
+    conversationHistoryTotal.value = response.total || 0
+  } catch (error: any) {
+    conversationHistoryItems.value = []
+    conversationHistoryTotal.value = 0
+    message.error(error?.message || '加载会话历史失败')
+  } finally {
+    conversationHistoryLoading.value = false
+  }
+}
+
+/** 打开一条历史会话，恢复可展示消息并沿用原 conversation_id 继续聊天。 */
+async function openHistoricalConversation(conversation: Conversation): Promise<void> {
+  if (running.value || openingConversationId.value) return
+  if (conversation.agent_id !== selectedAgentId.value) {
+    message.error('该会话不属于当前 Agent，无法继续聊天')
+    return
+  }
+
+  openingConversationId.value = conversation.conversation_id
+  try {
+    const response = await getConversationMessages(conversation.conversation_id, 200)
+    conversationId.value = conversation.conversation_id
+    messages.value = response.messages
+      .map(restoreHistoricalMessage)
+      .filter((item): item is MessageItem => item !== null)
+    input.value = ''
+    uploadedFiles.value = []
+    stickToBottom.value = true
+    conversationHistoryOpen.value = false
+    await scrollToBottom(true)
+    message.success('已进入历史会话，可以继续聊天')
+  } catch (error: any) {
+    message.error(error?.message || '加载会话消息失败')
+  } finally {
+    openingConversationId.value = ''
+  }
+}
+
+/** 把数据库历史消息转换为调用页复用的聊天消息结构。 */
+function restoreHistoricalMessage(historyMessage: ConversationMessage): MessageItem | null {
+  const messageTime = formatHistoryMessageTime(historyMessage.created_at)
+  if (historyMessage.role === 'user') {
+    return {
+      role: 'user',
+      content: historyMessage.content || '',
+      reasoning: '',
+      tool_calls: [],
+      blocks: [],
+      time: messageTime,
+    }
+  }
+
+  if (historyMessage.role === 'assistant' || historyMessage.role === 'agent') {
+    const content = historyMessage.content
+      || (historyMessage.error_message ? `[错误] ${historyMessage.error_message}` : '')
+    if (!content) return null
+    return {
+      role: 'assistant',
+      content,
+      reasoning: '',
+      tool_calls: [],
+      blocks: [{ type: 'content', content }],
+      time: messageTime,
+    }
+  }
+
+  // 工具调用和内部状态消息不在历史聊天气泡中重放，避免伪造不完整的实时执行时间线。
+  return null
+}
+
+/** 格式化会话列表中的最近更新时间。 */
+function formatConversationTime(value?: string | null): string {
+  if (!value) return '时间未知'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
+}
+
+/** 格式化历史消息气泡的时间。 */
+function formatHistoryMessageTime(value?: string | null): string {
+  if (!value) return '--:--'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime())
+    ? '--:--'
+    : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+
+/** 缩短会话 ID 展示，同时保留完整值作为鼠标提示。 */
+function shortConversationId(value: string): string {
+  return value.length > 28 ? `${value.slice(0, 25)}...` : value
 }
 
 /** 滚动到底部(只在 stickToBottom 时执行) */
@@ -1420,8 +1656,8 @@ function handleAgentStreamEvent(index: number, event: Record<string, any>) {
 
   // 生命周期：运行开始，记录 run_id，方便后续做运行链路查看。
   if (event.type === 'run_start' || event.type === 'resume_start') {
-    if (data.thread_id) {
-      conversationId.value = String(data.thread_id)
+    if (data.conversation_id || data.thread_id) {
+      conversationId.value = String(data.conversation_id || data.thread_id)
     }
     if (data.run_id) {
       const last = messages.value[index]
@@ -1532,21 +1768,7 @@ function handleAgentStreamEvent(index: number, event: Record<string, any>) {
 
 /** 以流式方式发送 Agent 消息。 */
 async function executeAgentStream(payload: Parameters<typeof runAgentStream>[0]) {
-  const selectedPlatform = platformAccessOptions.value.find(
-    (platform) => platform.platform_id === selectedPlatformId.value,
-  )
-  if (!selectedPlatform || !platformApiKey.value.trim() || !externalUserId.value.trim()) {
-    message.warning('请先选择业务平台，并确认该平台已有 API Key 和外部用户 ID')
-    return
-  }
-  saveBusinessDebugContext({
-    agentId: selectedAgentId.value,
-    platformId: selectedPlatform.platform_id,
-    platformName: selectedPlatform.platform_name,
-    platformApiKey: platformApiKey.value.trim(),
-    externalUserId: externalUserId.value.trim(),
-    businessAuthorization: businessAuthorization.value.trim(),
-  })
+  if (!persistCurrentBusinessIdentity()) return
   running.value = true
   stickToBottom.value = true
   const idx = await createAssistantStreamMessage()
@@ -1788,6 +2010,10 @@ onBeforeUnmount(() => {
 .agent-select {
   width: 240px;
 }
+.history-btn {
+  height: 36px;
+  border-radius: 8px;
+}
 .icon-btn {
   width: 36px;
   height: 36px;
@@ -1796,6 +2022,51 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   border-radius: 8px;
+}
+
+/* ========== 当前用户与 Agent 的历史会话抽屉 ========== */
+.conversation-history-tip {
+  margin-bottom: 16px;
+}
+.conversation-history-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  color: #64748b;
+  font-size: 13px;
+}
+.conversation-history-list {
+  border-top: 1px solid #f0f0f0;
+}
+.conversation-history-item {
+  padding: 14px 10px !important;
+  cursor: pointer;
+  border-radius: 8px;
+  transition: background-color 0.2s ease;
+}
+.conversation-history-item:hover {
+  background: #f5f8ff;
+}
+.conversation-history-item.active {
+  background: #e6f4ff;
+}
+.conversation-history-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.conversation-history-description {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: #8c8c8c;
+  font-size: 12px;
+}
+.conversation-history-pagination {
+  margin-top: 18px;
+  text-align: right;
 }
 
 /* ========== 消息区 ========== */
