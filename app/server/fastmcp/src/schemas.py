@@ -199,6 +199,7 @@ class MCPToolSearchRequest(BaseModel):
     """分页查询 MCP Tool 列表的请求。"""
 
     keyword: str | None = Field(default=None, description="匹配名称、描述和目标 API 地址")
+    platform_id: int | None = Field(default=None, ge=1, description="按照所属业务平台 ID 过滤")
     status: RecordStatus | None = Field(default=None, description="状态过滤")
     api_url: str | None = Field(default=None, description="目标 API 地址过滤")
     page: int = Field(default=1, ge=1, description="页码")

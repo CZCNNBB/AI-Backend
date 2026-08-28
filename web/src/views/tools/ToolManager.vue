@@ -9,7 +9,25 @@
     <a-row :gutter="16">
       <a-col :span="9">
         <a-card title="工具列表" :loading="loading">
-          <a-empty v-if="!tools.length" description="暂无工具" />
+          <div class="tool-list-filters">
+            <a-input-search
+              v-model:value="searchKeyword"
+              allow-clear
+              placeholder="按工具名称搜索"
+              @search="load"
+            />
+            <a-select
+              v-model:value="filterPlatformId"
+              allow-clear
+              placeholder="按业务平台筛选"
+              :options="platformOptions"
+              show-search
+              option-filter-prop="label"
+              @change="load"
+            />
+            <a-button @click="resetToolFilters">重置</a-button>
+          </div>
+          <a-empty v-if="!tools.length" description="暂无符合条件的工具" />
           <a-list v-else :data-source="tools" :pagination="{ pageSize: 10 }">
             <template #renderItem="{ item }">
               <a-list-item
@@ -25,6 +43,11 @@
                   </template>
                   <template #description>
                     <div class="tool-desc">{{ item.http_method }} {{ item.api_url }}</div>
+                    <a-space class="tool-platform-tags" size="small" wrap>
+                      <a-tag v-for="platformId in item.platform_ids" :key="platformId">
+                        {{ platformName(platformId) }}
+                      </a-tag>
+                    </a-space>
                   </template>
                 </a-list-item-meta>
               </a-list-item>
@@ -66,6 +89,14 @@
                 @click="changePublishStatus(true)"
               >发布 Tool</a-button>
               <a-button v-else danger @click="changePublishStatus(false)">停用 Tool</a-button>
+              <a-popconfirm
+                title="确定删除这个 Tool 吗？删除后无法恢复。"
+                ok-text="删除"
+                cancel-text="取消"
+                @confirm="deleteSelectedTool"
+              >
+                <a-button danger :loading="deleting">删除 Tool</a-button>
+              </a-popconfirm>
             </a-space>
 
             <a-tabs>
@@ -252,6 +283,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import {
+  deleteMcpTools,
   publishMcpTool,
   invokeMcpTool,
   searchMcpTools,
@@ -282,6 +314,9 @@ const testRuntimeInputsText = ref('{}')
 const businessAuthorization = ref('')
 const platformOptions = ref<{ label: string; value: number }[]>([])
 const platformNames = ref<Record<number, string>>({})
+const searchKeyword = ref('')
+const filterPlatformId = ref<number | undefined>(undefined)
+const deleting = ref(false)
 
 const httpMethodOptions = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map((value) => ({ label: value, value }))
 const statusOptions = [
@@ -319,7 +354,10 @@ function createEmptyForm(): McpToolUpsertRequest {
 async function load() {
   loading.value = true
   try {
-    const response = await searchMcpTools()
+    const response = await searchMcpTools({
+      keyword: searchKeyword.value.trim() || undefined,
+      platform_id: filterPlatformId.value,
+    })
     tools.value = response.items || []
     if (selectedTool.value) {
       selectedTool.value = tools.value.find((item) => item.name === selectedTool.value?.name) || null
@@ -328,6 +366,13 @@ async function load() {
   } finally {
     loading.value = false
   }
+}
+
+/** 清空工具名称和业务平台筛选，并重新加载完整列表。 */
+async function resetToolFilters(): Promise<void> {
+  searchKeyword.value = ''
+  filterPlatformId.value = undefined
+  await load()
 }
 
 /** 加载业务平台选项，供 MCP Tool 建立多对多归属关系。 */
@@ -554,9 +599,30 @@ async function onTestApi() {
 /** 发布或停用当前 Tool，并刷新管理列表。 */
 async function changePublishStatus(enabled: boolean) {
   if (!selectedTool.value) return
-  await publishMcpTool(selectedTool.value.name, enabled)
-  message.success(enabled ? 'Tool 已发布' : 'Tool 已停用')
-  await load()
+  try {
+    await publishMcpTool(selectedTool.value.name, enabled)
+    message.success(enabled ? 'Tool 已发布' : 'Tool 已停用')
+    await load()
+  } catch {
+    // 统一 HTTP 拦截器已经展示后端返回的 Agent 引用详情，这里只终止状态切换流程。
+  }
+}
+
+/** 删除当前工具；后端会再次检查是否仍有 Agent 引用，避免只依赖前端确认。 */
+async function deleteSelectedTool(): Promise<void> {
+  if (!selectedTool.value) return
+  const toolName = selectedTool.value.name
+  deleting.value = true
+  try {
+    await deleteMcpTools([toolName])
+    selectedTool.value = null
+    message.success(`Tool ${toolName} 已删除`)
+    await load()
+  } catch {
+    // 引用冲突等具体原因由统一 HTTP 拦截器展示，保留当前详情方便管理员定位。
+  } finally {
+    deleting.value = false
+  }
 }
 
 /** 选择一个工具并生成调试参数模板。 */
@@ -652,6 +718,8 @@ onMounted(async () => {
 .tool-item:hover { background: #f5f5f5; }
 .tool-item.active { background: #e6f4ff; }
 .tool-desc { color: #6b7280; font-size: 12px; line-height: 1.5; word-break: break-all; }
+.tool-list-filters { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; margin-bottom: 14px; }
+.tool-platform-tags { margin-top: 6px; }
 .form-tip { margin-top: 4px; color: #8c8c8c; font-size: 12px; line-height: 1.5; }
 .parameter-row { padding: 12px; margin-bottom: 10px; border: 1px solid #e5e7eb; border-radius: 6px; }
 .json-input textarea { font-family: Consolas, Monaco, 'Courier New', monospace; }
@@ -660,4 +728,9 @@ onMounted(async () => {
 .mb-4 { margin-bottom: 16px; }
 .mt-2 { margin-top: 8px; }
 .mt-3 { margin-top: 12px; }
+
+/* 窄屏下把筛选条件改为纵向排列，避免输入框被压缩到不可用。 */
+@media (max-width: 900px) {
+  .tool-list-filters { grid-template-columns: 1fr; }
+}
 </style>

@@ -39,7 +39,7 @@
             :options="platformOptions"
             show-search
             option-filter-prop="label"
-            @change="loadEligibleTools"
+            @change="onAgentPlatformsChange"
           />
           <div class="text-gray-500 mt-1">工具列表只展示同时覆盖这里全部业务平台的 MCP Tool。</div>
         </a-form-item>
@@ -62,15 +62,33 @@
       <!-- 工具配置 -->
       <a-card title="工具配置" class="mb-4">
         <a-form-item label="绑定工具" name="config.tools">
+          <div class="tool-filter-bar">
+            <a-input
+              v-model:value="toolKeyword"
+              allow-clear
+              placeholder="按工具名称搜索"
+            />
+            <a-select
+              v-model:value="toolPlatformFilterId"
+              allow-clear
+              placeholder="按业务平台筛选"
+              :options="toolPlatformFilterOptions"
+              show-search
+              option-filter-prop="label"
+            />
+          </div>
           <a-select
             v-model:value="form.config.tools"
             mode="multiple"
-            placeholder="选择该 Agent 可调用的常规工具"
+            placeholder="选择该 Agent 可以调用的 MCP 工具"
             style="width: 100%"
             :options="toolOptions"
             show-search
             option-filter-prop="label"
           />
+          <div class="text-gray-500 mt-1">
+            当前显示 {{ toolOptions.length }} / {{ eligibleTools.length }} 个可挂载工具；筛选只影响展示，不会移除已绑定工具。
+          </div>
         </a-form-item>
       </a-card>
 
@@ -215,7 +233,7 @@ import {
   type AgentTemplate,
   upsertAgentTemplate,
 } from '@/api/agentTemplate'
-import { listEligibleMcpTools } from '@/api/mcp'
+import { listEligibleMcpTools, type McpToolView } from '@/api/mcp'
 import { searchModelConfigs } from '@/api/modelConfigs'
 import { searchBusinessPlatforms } from '@/api/platform'
 
@@ -281,11 +299,36 @@ const rules = {
 }
 
 // 下拉数据
-const toolOptions = ref<{ label: string; value: string }[]>([])
+const eligibleTools = ref<McpToolView[]>([])
 const platformOptions = ref<{ label: string; value: number }[]>([])
 const modelOptions = ref<{ label: string; value: string }[]>([])
 const subAgentOptions = ref<{ label: string; value: string }[]>([])
 const a2aSubAgentList = ref<string[]>([])
+const toolKeyword = ref('')
+const toolPlatformFilterId = ref<number | undefined>(undefined)
+
+/** 工具筛选只允许选择当前 Agent 已绑定的业务平台。 */
+const toolPlatformFilterOptions = computed(() => platformOptions.value.filter(
+  (option) => form.platform_ids.includes(option.value),
+))
+
+/** 根据工具名和业务平台过滤可挂载 Tool，筛选状态不会修改已经选中的工具。 */
+const toolOptions = computed(() => {
+  const normalizedKeyword = toolKeyword.value.trim().toLowerCase()
+  return eligibleTools.value
+    .filter((tool) => {
+      const matchesKeyword = !normalizedKeyword
+        || tool.name.toLowerCase().includes(normalizedKeyword)
+        || (tool.description || '').toLowerCase().includes(normalizedKeyword)
+      const matchesPlatform = toolPlatformFilterId.value === undefined
+        || tool.platform_ids.includes(toolPlatformFilterId.value)
+      return matchesKeyword && matchesPlatform
+    })
+    .map((tool) => ({
+      label: tool.description ? `${tool.name} — ${tool.description}` : tool.name,
+      value: tool.name,
+    }))
+})
 
 /** 加载下拉数据 */
 async function loadOptions() {
@@ -316,17 +359,38 @@ async function loadOptions() {
 }
 
 /** 根据 Agent 当前平台集合加载可安全挂载的 MCP Tool。 */
-async function loadEligibleTools() {
+async function loadEligibleTools(removeInvalidSelections = false): Promise<void> {
   if (!form.platform_ids.length) {
-    toolOptions.value = []
+    eligibleTools.value = []
     return
   }
   try {
     const tools = await listEligibleMcpTools(form.platform_ids)
-    toolOptions.value = tools.map((item) => ({ label: item.name, value: item.name }))
+    eligibleTools.value = tools
+    if (removeInvalidSelections) {
+      // 用户主动调整 Agent 平台后，原工具可能不再覆盖新的平台集合。
+      // 此时立即清理失效选择并明确提示，避免直到保存时才收到后端校验错误。
+      const eligibleToolNames = new Set(tools.map((tool) => tool.name))
+      const removedToolNames = form.config.tools.filter((toolName) => !eligibleToolNames.has(toolName))
+      if (removedToolNames.length) {
+        form.config.tools = form.config.tools.filter((toolName) => eligibleToolNames.has(toolName))
+        message.warning(`已移除不再覆盖当前业务平台的工具：${removedToolNames.join('、')}`)
+      }
+    }
   } catch {
-    toolOptions.value = []
+    eligibleTools.value = []
   }
+}
+
+/** Agent 所属平台变化后刷新可挂载工具，并清理已经失效的工具选择。 */
+async function onAgentPlatformsChange(): Promise<void> {
+  if (
+    toolPlatformFilterId.value !== undefined
+    && !form.platform_ids.includes(toolPlatformFilterId.value)
+  ) {
+    toolPlatformFilterId.value = undefined
+  }
+  await loadEligibleTools(true)
 }
 
 /** 加载编辑数据 */
@@ -402,5 +466,18 @@ onMounted(async () => {
 }
 .ml-2 {
   margin-left: 8px;
+}
+.tool-filter-bar {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr);
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+/* 小屏编辑时筛选项纵向排列，保证名称和平台字段都有足够输入空间。 */
+@media (max-width: 768px) {
+  .tool-filter-bar {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

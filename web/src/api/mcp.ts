@@ -66,9 +66,22 @@ export function upsertMcpTool(payload: McpToolUpsertRequest) {
   return httpPost<McpToolView>('/fastmcp/tools/upsert', payload)
 }
 
-/** 查询平台管理的 MCP Tool 列表。 */
-export function searchMcpTools() {
-  return httpPost<McpToolSearchResponse>('/fastmcp/tools/search', { page: 1, page_size: 100 })
+/** MCP Tool 管理列表查询条件。 */
+export interface McpToolSearchParams {
+  keyword?: string
+  platform_id?: number
+  status?: 'draft' | 'enabled' | 'disabled'
+  page?: number
+  page_size?: number
+}
+
+/** 按工具名称、所属平台和状态查询 MCP Tool 列表。 */
+export function searchMcpTools(params: McpToolSearchParams = {}) {
+  return httpPost<McpToolSearchResponse>('/fastmcp/tools/search', {
+    page: 1,
+    page_size: 100,
+    ...params,
+  })
 }
 
 /** 查询平台集合完全覆盖 Agent 平台集合的已发布 MCP Tool。 */
@@ -102,6 +115,11 @@ export function invokeMcpTool(
 /** 发布或停用一个 MCP Tool。 */
 export function publishMcpTool(name: string, enabled: boolean) {
   return httpPost<McpToolView>('/fastmcp/tools/publish', { name, enabled })
+}
+
+/** 删除一个或多个不再被 Agent 引用的 MCP Tool。 */
+export function deleteMcpTools(names: string[]) {
+  return httpPost<number>('/fastmcp/tools/delete', { names })
 }
 
 /** 把平台工具视图转换成工具管理页统一展示结构。 */

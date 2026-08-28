@@ -257,6 +257,20 @@ class BusinessPlatformService:
 
     def validate_tools_can_be_deleted(self, db: Session, tool_names: list[str]) -> None:
         """阻止删除仍被 Agent 模板引用的 MCP Tool。"""
+        self._validate_tools_not_in_use(db, tool_names, operation_name="删除")
+
+    def validate_tools_can_be_disabled(self, db: Session, tool_names: list[str]) -> None:
+        """阻止停用仍被 Agent 模板引用的 MCP Tool。"""
+        self._validate_tools_not_in_use(db, tool_names, operation_name="停用")
+
+    def _validate_tools_not_in_use(
+        self,
+        db: Session,
+        tool_names: list[str],
+        *,
+        operation_name: str,
+    ) -> None:
+        """统一校验工具不存在 Agent 引用，并在错误中列出受影响 Agent。"""
         tool_usage: list[str] = []
         for tool_name in tool_names:
             templates = self.repository.list_agent_templates_using_tool(db, tool_name)
@@ -271,7 +285,11 @@ class BusinessPlatformService:
         if tool_usage:
             raise BusinessException(
                 code=409,
-                msg="以下 MCP Tool 仍被 Agent 使用，不能删除: " + "; ".join(tool_usage),
+                msg=(
+                    f"以下 MCP Tool 仍被 Agent 使用，不能{operation_name}: "
+                    + "; ".join(tool_usage)
+                    + "。请先在对应 Agent 配置中移除这些工具后再操作。"
+                ),
             )
 
     def validate_agent_tool_platforms(

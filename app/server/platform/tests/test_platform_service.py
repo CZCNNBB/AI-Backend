@@ -140,6 +140,25 @@ class BusinessPlatformSecurityTestCase(unittest.TestCase):
         self.assertIn("query_order", exception_context.exception.msg)
         self.assertIn("customer-service-agent", exception_context.exception.msg)
 
+    def test_rejects_disabling_tool_used_by_agent(self) -> None:
+        """仍被 Agent 模板引用的 MCP Tool 不允许停用，并应提示先解除 Agent 绑定。"""
+        repository = MagicMock()
+        repository.list_agent_templates_using_tool.return_value = [
+            SimpleNamespace(agent_id="order-agent"),
+            SimpleNamespace(agent_id="audit-agent"),
+        ]
+        service = BusinessPlatformService(repository=repository)
+
+        with self.assertRaises(BusinessException) as exception_context:
+            service.validate_tools_can_be_disabled(MagicMock(), ["query_order"])
+
+        error_message = exception_context.exception.msg
+        self.assertIn("不能停用", error_message)
+        self.assertIn("query_order", error_message)
+        self.assertIn("order-agent", error_message)
+        self.assertIn("audit-agent", error_message)
+        self.assertIn("先在对应 Agent 配置中移除", error_message)
+
     def test_checkpoint_thread_id_contains_platform_user_and_conversation(self) -> None:
         """持久会话的内部 Checkpoint thread_id 必须包含完整租户命名空间。"""
         request = AgentRunRequest(

@@ -1,17 +1,73 @@
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 from fastmcp import Client, FastMCP
 from pydantic import ValidationError
 
+from app.common.core.exceptions import BusinessException
 from app.server.fastmcp.src.executor import (
     HTTPAPIToolExecutor,
     HTTPToolExecutionError,
     HTTPToolExecutionResult,
 )
 from app.server.fastmcp.src.registry import FastMCPToolRegistry
-from app.server.fastmcp.src.schemas import MCPToolUpsertRequest, MCPToolView
+from app.server.fastmcp.src.schemas import MCPToolPublishRequest, MCPToolUpsertRequest, MCPToolView
+from app.server.fastmcp.src.service import MCPToolService
+
+
+class MCPToolAvailabilityGuardTestCase(unittest.TestCase):
+    """验证所有让 MCP Tool 不可用的入口都会执行 Agent 引用保护。"""
+
+    def test_publish_endpoint_checks_agent_references_before_disabling(self) -> None:
+        """单独的停用操作必须先校验 Agent 引用，冲突时不能更新数据库状态。"""
+        repository = MagicMock()
+        repository.get_tool_by_name.return_value = MagicMock(name="query_order", status="enabled")
+        platform_service = MagicMock()
+        platform_service.validate_tools_can_be_disabled.side_effect = BusinessException(
+            code=409,
+            msg="工具仍被 Agent 使用",
+        )
+        service = MCPToolService(
+            repository=repository,
+            registry=MagicMock(),
+            platform_service=platform_service,
+        )
+
+        with self.assertRaises(BusinessException):
+            service.publish_tool(
+                MagicMock(),
+                MCPToolPublishRequest(name="query_order", enabled=False),
+            )
+
+        platform_service.validate_tools_can_be_disabled.assert_called_once()
+        repository.update_status.assert_not_called()
+
+    def test_upsert_checks_agent_references_when_saving_disabled_status(self) -> None:
+        """编辑保存为停用状态也必须执行相同校验，不能绕过 publish 接口。"""
+        repository = MagicMock()
+        platform_service = MagicMock()
+        platform_service.validate_tools_can_be_disabled.side_effect = BusinessException(
+            code=409,
+            msg="工具仍被 Agent 使用",
+        )
+        service = MCPToolService(
+            repository=repository,
+            registry=MagicMock(),
+            platform_service=platform_service,
+        )
+        request = MCPToolUpsertRequest(
+            name="query_order",
+            platform_ids=[1],
+            api_url="http://business.test/orders",
+            status="disabled",
+        )
+
+        with self.assertRaises(BusinessException):
+            service.upsert_tool(MagicMock(), request)
+
+        platform_service.validate_tools_can_be_disabled.assert_called_once()
+        repository.upsert_tool.assert_not_called()
 
 
 class HTTPAPIToolExecutorTestCase(unittest.IsolatedAsyncioTestCase):

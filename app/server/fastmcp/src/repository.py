@@ -67,12 +67,16 @@ class MCPToolRepository:
         db: Session,
         *,
         keyword: str | None = None,
+        platform_id: int | None = None,
         status: str | None = None,
         api_url: str | None = None,
         page: int = 1,
         page_size: int = 20,
     ) -> tuple[list[MCPToolRecord], int]:
         """分页查询 MCP Tool 配置。"""
+        # 延迟导入平台关联表，避免 FastMCP 基础模型与 platform 模块形成顶层循环依赖。
+        from app.server.platform.src.models import BusinessPlatformMCPTool
+
         filters = []
         if keyword:
             like_keyword = f"%{keyword}%"
@@ -90,6 +94,16 @@ class MCPToolRepository:
 
         data_sql = select(MCPToolRecord)
         count_sql = select(func.count()).select_from(MCPToolRecord)
+        if platform_id is not None:
+            # 关联表对 platform_id + mcp_tool_id 有联合主键，因此按单个平台过滤不会产生重复工具行。
+            data_sql = data_sql.join(
+                BusinessPlatformMCPTool,
+                BusinessPlatformMCPTool.mcp_tool_id == MCPToolRecord.id,
+            ).where(BusinessPlatformMCPTool.platform_id == platform_id)
+            count_sql = count_sql.join(
+                BusinessPlatformMCPTool,
+                BusinessPlatformMCPTool.mcp_tool_id == MCPToolRecord.id,
+            ).where(BusinessPlatformMCPTool.platform_id == platform_id)
         for query_filter in filters:
             data_sql = data_sql.where(query_filter)
             count_sql = count_sql.where(query_filter)

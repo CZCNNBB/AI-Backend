@@ -44,6 +44,10 @@ class MCPToolService:
 
     def upsert_tool(self, db: Session, request: MCPToolUpsertRequest) -> MCPToolView:
         """保存 API 配置，并按 status 在当前进程热注册或移除 Tool。"""
+        if request.status != "enabled":
+            # 编辑页面可以直接把状态保存为草稿或停用，因此这里也必须执行引用检查，
+            # 不能只保护单独的 publish 接口，否则会留下绕过停用校验的入口。
+            self.platform_service.validate_tools_can_be_disabled(db, [request.name])
         platform_ids = self.platform_service.validate_platform_ids(db, request.platform_ids)
         record = self.repository.upsert_tool(
             db,
@@ -87,6 +91,7 @@ class MCPToolService:
         rows, total = self.repository.list_tools(
             db,
             keyword=request.keyword,
+            platform_id=request.platform_id,
             status=request.status,
             api_url=request.api_url,
             page=request.page,
@@ -123,6 +128,9 @@ class MCPToolService:
         record = self.repository.get_tool_by_name(db, request.name)
         if record is None:
             raise BusinessException(code=404, msg=f"MCP Tool 不存在: {request.name}")
+        if not request.enabled:
+            # Tool 一旦停用就会从 FastMCP Registry 中移除；先阻止仍有 Agent 引用的状态变更。
+            self.platform_service.validate_tools_can_be_disabled(db, [request.name])
         new_status = "enabled" if request.enabled else "disabled"
         updated_record = self.repository.update_status(db, record, new_status)
         tool_view = self.to_tool_view(
