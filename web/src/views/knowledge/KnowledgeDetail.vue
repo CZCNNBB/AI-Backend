@@ -267,7 +267,8 @@ async function uploadAndSubmit() {
   if (!selectedFiles.value.length) return
   uploading.value = true
   try {
-    const uploadResult = await uploadFiles(selectedFiles.value)
+    // 知识库需要保留源文件用于重建索引、重新解析和故障恢复，因此标记为长期文件。
+    const uploadResult = await uploadFiles(selectedFiles.value, true)
     await Promise.all(
       uploadResult.file_ids.map((fileId) => submitKnowledgeDocument({
         knowledge_id: knowledgeId.value,

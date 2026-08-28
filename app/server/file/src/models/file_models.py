@@ -24,6 +24,8 @@ class UploadedFileRecord(SQLModel, table=True):
     extension: str = Field(default="", max_length=50)
     mime_type: str | None = Field(default=None, max_length=255)
     size_bytes: int = Field(default=0)
+    # 长期文件由知识库等持久业务使用；临时文件允许后台按保留时长自动清理。
+    is_long_term: bool = Field(default=False)
 
     status: str = Field(default="uploaded", max_length=30)
     content_path: str | None = Field(default=None)

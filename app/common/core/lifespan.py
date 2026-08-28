@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.server.agent.src.checkpoint import agent_checkpoint_service
+from app.server.file.src.service.file_cleanup_manager import temporary_file_cleanup_manager
 from app.server.knowledge.src.services import knowledge_service
 
 
@@ -19,7 +20,12 @@ async def app_lifespan(app: FastAPI):
         try:
             # Knowledge startup 统一检查 PostgreSQL、Milvus 和本地切片能力。
             await knowledge_service.startup()
-            yield
+            await temporary_file_cleanup_manager.startup()
+            try:
+                yield
+            finally:
+                # 文件清理任务必须在数据库基础设施关闭前停止。
+                await temporary_file_cleanup_manager.close()
         finally:
             # 即使 Knowledge 在启动中途失败，也要清理由它持有的部分初始化资源。
             await knowledge_service.close()

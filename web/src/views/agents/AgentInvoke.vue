@@ -722,7 +722,8 @@ async function onFilesSelected(event: Event) {
   uploadingFiles.value = true
   let uploadedFileIds: string[] = []
   try {
-    const uploadResult = await uploadFiles(files)
+    // Agent 对话附件属于临时文件，后台会在超过配置保留时间后自动清理。
+    const uploadResult = await uploadFiles(files, false)
     uploadedFileIds = uploadResult.file_ids
 
     // 上传接口只负责保存原文件。Agent 需要立即读取附件，因此在当前业务场景中

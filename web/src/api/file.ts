@@ -22,9 +22,11 @@ export interface FileUploadResponse {
 }
 
 /** 批量上传原始文件；接口只负责保存并返回 file_id，不执行内容解析。 */
-export function uploadFiles(files: File[]): Promise<FileUploadResponse> {
+export function uploadFiles(files: File[], isLongTerm: boolean): Promise<FileUploadResponse> {
+  // 文件用途必须由业务场景明确指定，避免知识库源文件被当作临时附件清理。
   const formData = new FormData()
   files.forEach((file) => formData.append('files', file))
+  formData.append('is_long_term', String(isLongTerm))
   return http.post<unknown, FileUploadResponse>('/file/upload', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   })

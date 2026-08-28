@@ -328,6 +328,7 @@ CREATE TABLE IF NOT EXISTS agent.uploaded_files (
     extension VARCHAR(50) NOT NULL DEFAULT '',
     mime_type VARCHAR(255),
     size_bytes BIGINT NOT NULL DEFAULT 0,
+    is_long_term BOOLEAN NOT NULL DEFAULT FALSE,
     status VARCHAR(30) NOT NULL DEFAULT 'uploaded',
     content_path TEXT,
     content_type VARCHAR(30) NOT NULL DEFAULT 'pending',
@@ -349,9 +350,13 @@ ON agent.uploaded_files(conversion_status);
 CREATE INDEX IF NOT EXISTS idx_uploaded_files_created_at
 ON agent.uploaded_files(created_at);
 
+CREATE INDEX IF NOT EXISTS idx_uploaded_files_cleanup
+ON agent.uploaded_files(is_long_term, created_at);
+
 COMMENT ON TABLE agent.uploaded_files IS 'AI-backend 文件服务上传文件记录表。';
 COMMENT ON COLUMN agent.uploaded_files.file_id IS '文件 ID，上传后返回给前端、Agent 和知识库使用。';
 COMMENT ON COLUMN agent.uploaded_files.storage_path IS '服务端原始文件存储路径。';
+COMMENT ON COLUMN agent.uploaded_files.is_long_term IS '是否长期保存；false 表示可按保留时间清理的 Agent 临时附件。';
 COMMENT ON COLUMN agent.uploaded_files.content_path IS 'Agent 实际读取的内容源路径。';
 COMMENT ON COLUMN agent.uploaded_files.conversion_status IS '转换状态：pending、processing、success、failed 或 not_required。';
 COMMENT ON COLUMN agent.uploaded_files.metadata IS '文件扩展元数据。';

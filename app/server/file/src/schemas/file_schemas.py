@@ -12,6 +12,7 @@ class UploadedFileView(BaseModel):
     extension: str = Field(default="", description="文件扩展名")
     mime_type: str | None = Field(default=None, description="MIME 类型")
     size_bytes: int = Field(default=0, description="文件大小，单位字节")
+    is_long_term: bool = Field(..., description="是否为需要长期保存的文件")
     status: str = Field(default="uploaded", description="文件状态")
     content_type: str = Field(default="pending", description="内容类型")
     conversion_status: str = Field(default="pending", description="转换状态")

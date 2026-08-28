@@ -37,11 +37,12 @@ class FileUploadServiceTests(unittest.IsolatedAsyncioTestCase):
                 headers=Headers({"content-type": "application/pdf"}),
             )
 
-            response = await service.upload_files(MagicMock(), [upload_file])
+            response = await service.upload_files(MagicMock(), [upload_file], is_long_term=False)
 
             self.assertEqual(len(response.file_ids), 1)
             saved_record = repository.add.call_args.args[1]
             self.assertEqual(response.file_ids[0], saved_record.file_id)
+            self.assertFalse(saved_record.is_long_term)
             self.assertEqual(saved_record.content_type, "pending")
             self.assertEqual(saved_record.conversion_status, "pending")
             self.assertIsNone(saved_record.content_path)

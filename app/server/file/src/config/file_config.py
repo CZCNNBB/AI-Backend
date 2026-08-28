@@ -26,6 +26,24 @@ def env_positive_int(name: str, default: int) -> int:
     return value if value > 0 else default
 
 
+def env_bool(name: str, default: bool) -> bool:
+    """读取布尔环境变量，无法识别时使用默认值。
+
+    Args:
+        name: 环境变量名称。
+        default: 缺失或非法时使用的默认值。
+
+    Returns:
+        解析后的布尔值。
+    """
+    raw_value = (os.getenv(name) or "").strip().lower()
+    if raw_value in {"true", "1", "yes", "on"}:
+        return True
+    if raw_value in {"false", "0", "no", "off"}:
+        return False
+    return default
+
+
 @dataclass(frozen=True)
 class FileServiceConfig:
     """文件服务的环境配置。"""
@@ -37,6 +55,10 @@ class FileServiceConfig:
     upload_chunk_bytes: int
     default_read_line_count: int
     max_read_response_chars: int
+    cleanup_enabled: bool = True
+    temporary_retention_hours: int = 24
+    cleanup_interval_seconds: int = 3600
+    cleanup_batch_size: int = 100
 
     @classmethod
     def from_env(cls) -> "FileServiceConfig":
@@ -56,4 +78,8 @@ class FileServiceConfig:
             upload_chunk_bytes=upload_chunk_kb * 1024,
             default_read_line_count=env_positive_int("FILE_DEFAULT_READ_LINE_COUNT", 200),
             max_read_response_chars=env_positive_int("FILE_MAX_READ_RESPONSE_CHARS", 24_000),
+            cleanup_enabled=env_bool("FILE_CLEANUP_ENABLED", True),
+            temporary_retention_hours=env_positive_int("FILE_TEMP_RETENTION_HOURS", 24),
+            cleanup_interval_seconds=env_positive_int("FILE_CLEANUP_INTERVAL_SECONDS", 3600),
+            cleanup_batch_size=env_positive_int("FILE_CLEANUP_BATCH_SIZE", 100),
         )

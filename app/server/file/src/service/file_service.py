@@ -43,7 +43,12 @@ class FileService:
         self.parser = parser or FileParser()
         self.config = config or FileServiceConfig.from_env()
 
-    async def upload_files(self, db: Session, files: list[UploadFile]) -> FileUploadResponse:
+    async def upload_files(
+        self,
+        db: Session,
+        files: list[UploadFile],
+        is_long_term: bool,
+    ) -> FileUploadResponse:
         """保存原始文件并返回 file_id，不在上传接口中执行内容解析。
 
         上传接口只负责文件大小校验、磁盘保存和数据库记录创建。MinerU、PDF 转 Markdown、
@@ -52,6 +57,7 @@ class FileService:
         Args:
             db: PostgreSQL Session。
             files: FastAPI 接收的上传文件列表。
+            is_long_term: 是否长期保存；为 False 时允许定时任务按保留时长清理。
 
         Returns:
             按上传顺序返回的文件 ID 列表。
@@ -61,7 +67,11 @@ class FileService:
         if len(files) > self.config.max_files_per_upload:
             raise RuntimeError(f"单次最多上传 {self.config.max_files_per_upload} 个文件。")
 
-        logger.info("文件上传开始: file_count=%s", len(files))
+        logger.info(
+            "文件上传开始: file_count=%s is_long_term=%s",
+            len(files),
+            is_long_term,
+        )
 
         self.get_upload_dir().mkdir(parents=True, exist_ok=True)
         created_file_ids: list[str] = []
@@ -97,6 +107,7 @@ class FileService:
                         extension=extension,
                         mime_type=upload_file.content_type,
                         size_bytes=file_size,
+                        is_long_term=is_long_term,
                         status="uploaded",
                         content_type="pending",
                         conversion_status="pending",
@@ -660,6 +671,7 @@ class FileService:
             extension=record.extension,
             mime_type=record.mime_type,
             size_bytes=record.size_bytes,
+            is_long_term=record.is_long_term,
             status=record.status,
             content_type=record.content_type,
             conversion_status=record.conversion_status,

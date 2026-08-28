@@ -1,6 +1,6 @@
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends, File, Form, UploadFile
 from sqlmodel import Session
 
 from app.common.db.postgres_db import get_postgres_engine
@@ -28,9 +28,13 @@ def file_health():
 
 
 @router.post("/upload", response_model=Result[FileUploadResponse], summary="上传文件")
-async def upload_files(files: list[UploadFile] = File(...), db: Session = Depends(get_postgres_engine)):
-    """只保存原始文件并返回 file_id，内容解析由后续业务场景显式触发。"""
-    return Result.success(await file_service.upload_files(db, files))
+async def upload_files(
+    files: list[UploadFile] = File(...),
+    is_long_term: bool = Form(..., description="是否长期保存：知识库传 true，Agent 附件传 false"),
+    db: Session = Depends(get_postgres_engine),
+):
+    """保存原始文件并返回 file_id，由调用场景明确指定是否长期保存。"""
+    return Result.success(await file_service.upload_files(db, files, is_long_term))
 
 
 @router.post("/detail", response_model=Result[UploadedFileView], summary="查询文件详情")
