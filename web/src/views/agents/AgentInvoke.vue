@@ -1,40 +1,23 @@
 <!--
   Agent 调用页
   - 现代化聊天式调用界面
-  - 顶部 Agent 选择器,中间聊天气泡,底部输入区
+  - 新建会话时选择 Agent,中间聊天气泡,底部输入区
   - 渐变背景 + 卡片化设计 + 丰富空状态
 -->
 <template>
   <div class="invoke-page">
-    <!-- 顶部:Agent 选择器与操作区 -->
-    <div class="invoke-header">
-      <div class="header-left">
-        <div class="header-logo">🤖</div>
-        <div class="header-title">
-          <div class="title-main">Agent 调用台</div>
-          <div class="title-sub">
-            <span v-if="agentDetail" class="agent-info">
-              <span class="status-dot" :class="`status-${agentDetail.status || 'active'}`"></span>
-              当前 Agent: {{ agentName }}
-            </span>
-            <span v-else class="agent-info-placeholder">未选择 Agent</span>
+    <!-- 当前会话工具栏：只展示已锁定 Agent，不允许在会话中途切换。 -->
+    <div class="conversation-toolbar">
+      <div class="current-agent-summary">
+        <div class="current-agent-avatar">🤖</div>
+        <div>
+          <div class="current-agent-name">{{ selectedAgentId ? agentName : '尚未新建会话' }}</div>
+          <div class="current-agent-tip">
+            {{ selectedAgentId ? '当前会话 Agent · 如需切换请新建会话' : '新建会话后即可开始对话' }}
           </div>
         </div>
       </div>
-      <div class="header-right">
-        <a-select
-          v-model:value="selectedAgentId"
-          show-search
-          placeholder="切换 Agent 模板"
-          class="agent-select"
-          :options="agentOptions"
-          :loading="agentListLoading"
-          option-filter-prop="label"
-          allow-clear
-          @change="onAgentChange"
-        >
-          <template #suffixIcon><ApiOutlined /></template>
-        </a-select>
+      <div class="conversation-actions">
         <a-button
           class="history-btn"
           :disabled="!selectedAgentId || running"
@@ -43,44 +26,16 @@
           <template #icon><HistoryOutlined /></template>
           会话历史
         </a-button>
-        <a-tooltip title="新建会话">
-          <a-button class="icon-btn" @click="newConversation">
-            <template #icon><PlusOutlined /></template>
-          </a-button>
-        </a-tooltip>
+        <a-button class="new-conversation-btn" type="primary" :disabled="running" @click="newConversation">
+          <template #icon><PlusOutlined /></template>
+          新建会话
+        </a-button>
         <a-tooltip title="管理 Agent 模板">
           <a-button class="icon-btn" @click="router.push('/agents')">
             <template #icon><SettingOutlined /></template>
           </a-button>
         </a-tooltip>
       </div>
-    </div>
-
-    <div class="credential-bar">
-      <a-select
-        v-model:value="selectedPlatformId"
-        :options="platformOptions"
-        :loading="platformOptionsLoading"
-        :disabled="!selectedAgentId || platformOptions.length <= 1"
-        placeholder="选择 Agent 所属业务平台"
-        class="credential-input"
-        @change="onPlatformChange"
-      />
-      <a-input-password
-        v-model:value="platformApiKey"
-        placeholder="自动回填失败时，可手动粘贴平台 API Key"
-        class="credential-input"
-      />
-      <a-input
-        v-model:value="externalUserId"
-        placeholder="外部用户 ID，例如 user_10086"
-        class="credential-input"
-      />
-      <a-input-password
-        v-model:value="businessAuthorization"
-        placeholder="业务用户 Token，可选；例如 Bearer xxxxx"
-        class="credential-input"
-      />
     </div>
 
     <!-- 消息区 -->
@@ -92,16 +47,17 @@
           <div class="empty-ripple"></div>
         </div>
         <h2 class="empty-title">
-          {{ selectedAgentId ? '开始与 Agent 对话' : '先选择一个 Agent 模板' }}
+          {{ selectedAgentId ? '开始与 Agent 对话' : '新建一段 Agent 会话' }}
         </h2>
         <p class="empty-desc">
           {{ selectedAgentId
             ? '在下方输入框提问, Agent 会自动调用配置的工具并回复'
-            : '从右上角下拉框选择要调用的 Agent,即可开始对话' }}
+            : '先选择 Agent，创建会话后即可开始对话' }}
         </p>
         <div v-if="!selectedAgentId" class="empty-suggestions">
-          <a-button v-for="(g, gi) in agentOptions.slice(0, 3)" :key="gi" type="default" size="small" @click="onAgentChange(g.value)">
-            {{ g.label }}
+          <a-button type="primary" @click="newConversation">
+            <template #icon><PlusOutlined /></template>
+            新建会话
           </a-button>
         </div>
       </div>
@@ -400,9 +356,57 @@
         <span v-else-if="selectedAgentId" class="hint-active">
           <ThunderboltOutlined /> 当前会话 ID: {{ conversationId.slice(0, 16) }}...
         </span>
-        <span v-else>👈 请先选择 Agent</span>
+        <span v-else>请先新建会话并选择 Agent</span>
       </div>
     </div>
+
+    <a-modal
+      v-model:open="newConversationModalOpen"
+      title="新建会话"
+      ok-text="创建会话"
+      cancel-text="取消"
+      :confirm-loading="newConversationPreparing"
+      :ok-button-props="{ disabled: !pendingAgentId || !pendingPlatformId }"
+      :mask-closable="false"
+      @ok="confirmNewConversation"
+    >
+      <a-alert
+        type="info"
+        show-icon
+        class="new-conversation-alert"
+        message="Agent 会在本次会话中保持固定"
+        description="如需与其他 Agent 对话，请重新点击“新建会话”。平台身份和用户凭证沿用右上角的调试身份配置。"
+      />
+      <a-form layout="vertical">
+        <a-form-item label="Agent" required>
+          <a-select
+            v-model:value="pendingAgentId"
+            show-search
+            option-filter-prop="label"
+            :options="agentOptions"
+            :loading="agentListLoading"
+            placeholder="选择本次会话使用的 Agent"
+            @change="onPendingAgentChange"
+          />
+        </a-form-item>
+        <a-form-item label="业务平台" required>
+          <a-select
+            v-model:value="pendingPlatformId"
+            :options="pendingPlatformOptions"
+            :loading="newConversationPreparing"
+            :disabled="!pendingAgentId || pendingPlatformAccessOptions.length <= 1"
+            placeholder="单平台自动选择，多平台请手动选择"
+          />
+          <div v-if="pendingAgentId && !newConversationPreparing && !pendingPlatformAccessOptions.length" class="new-conversation-warning">
+            当前 Agent 尚未绑定业务平台，暂时不能创建调试会话。
+          </div>
+        </a-form-item>
+        <a-form-item label="当前调试用户">
+          <a-input :value="debugIdentitySummary" disabled />
+          <div class="new-conversation-help">如需修改用户 ID、API Key 或业务 Token，请使用页面右上角“配置调试身份”。</div>
+        </a-form-item>
+      </a-form>
+    </a-modal>
 
     <a-drawer
       v-model:open="conversationHistoryOpen"
@@ -471,14 +475,13 @@
 /**
  * Agent 调用页
  * - 提供现代化聊天式调用体验
- * - 顶部选择 Agent, 下方连续对话
+ * - 新建会话时确定 Agent，会话内保持固定
  * - 微吸: 用户在底部则吸底, 翻看历史则不打扰
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import {
-  ApiOutlined,
   ClockCircleOutlined,
   HistoryOutlined,
   PlusOutlined,
@@ -531,7 +534,13 @@ const platformOptionsLoading = ref(false)
 const platformAccessOptions = ref<AgentPlatformAccessOption[]>([])
 const selectedPlatformId = ref<number | undefined>(undefined)
 
-const platformOptions = computed(() => platformAccessOptions.value.map((platform) => ({
+// 新建会话弹窗使用独立候选状态，确认前不影响正在查看的当前会话。
+const newConversationModalOpen = ref(false)
+const newConversationPreparing = ref(false)
+const pendingAgentId = ref<string>('')
+const pendingPlatformId = ref<number | undefined>(undefined)
+const pendingPlatformAccessOptions = ref<AgentPlatformAccessOption[]>([])
+const pendingPlatformOptions = computed(() => pendingPlatformAccessOptions.value.map((platform) => ({
   label: `${platform.platform_name} (${platform.platform_code})`,
   value: platform.platform_id,
 })))
@@ -542,6 +551,21 @@ const initialDebugContext = readBusinessDebugContext()
 const platformApiKey = ref(initialDebugContext.platformApiKey)
 const externalUserId = ref(initialDebugContext.externalUserId)
 const businessAuthorization = ref(initialDebugContext.businessAuthorization)
+
+// 新建会话弹窗只展示调试身份摘要，不在聊天页重复提供凭证输入框。
+// 这里使用 ref 主动刷新，避免直接读取 sessionStorage 的 computed 因没有响应式依赖而缓存旧值。
+const debugIdentitySummary = ref('尚未配置外部用户 ID')
+
+/** 根据最新的全局调试身份刷新弹窗摘要。 */
+function refreshDebugIdentitySummary(): void {
+  const context = readBusinessDebugContext()
+  if (!context.externalUserId) {
+    debugIdentitySummary.value = '尚未配置外部用户 ID'
+    return
+  }
+  const platformName = context.platformName || '业务平台待随 Agent 确认'
+  debugIdentitySummary.value = `${platformName} / ${context.externalUserId}`
+}
 const conversationHistoryOpen = ref(false)
 const conversationHistoryLoading = ref(false)
 const conversationHistoryItems = ref<Conversation[]>([])
@@ -679,7 +703,7 @@ const inputDisabled = computed(() => running.value || !selectedAgentId.value || 
 /** 输入框占位文案，根据当前交互状态提示用户下一步。 */
 const inputPlaceholder = computed(() => {
   if (waitingPlanConfirmation.value) return '请先处理上方任务计划确认卡片'
-  if (!selectedAgentId.value) return '请先选择 Agent 模板'
+  if (!selectedAgentId.value) return '请先新建会话并选择 Agent'
   return '输入你的问题, Enter 发送, Shift+Enter 换行'
 })
 
@@ -840,14 +864,7 @@ function applySelectedPlatformApiKey(): void {
   }
 }
 
-/** 响应多平台 Agent 的平台下拉选择。 */
-function onPlatformChange(): void {
-  // 切换平台时不能继续沿用前一个平台的 Key；新平台无自动 Key 时由用户手动填写。
-  platformApiKey.value = ''
-  applySelectedPlatformApiKey()
-}
-
-/** 选择器变化 */
+/** 激活新会话已经确认的 Agent，并清理上一段会话的全部临时状态。 */
 async function onAgentChange(agentId?: string) {
   const normalizedAgentId = agentId || ''
   selectedAgentId.value = normalizedAgentId
@@ -864,17 +881,21 @@ async function onAgentChange(agentId?: string) {
   await loadAgentDetail(normalizedAgentId)
 }
 
-/** 顶部调试身份保存后，同步 Agent、平台、用户和业务 Token 到调用页。 */
+/** 顶部调试身份保存后同步凭证，但绝不在当前会话中途替换 Agent。 */
 async function syncDebugContextToInvokePage(): Promise<void> {
   const context = readBusinessDebugContext()
+  refreshDebugIdentitySummary()
+
+  if (selectedAgentId.value && context.agentId && context.agentId !== selectedAgentId.value) {
+    // 调试身份可能为另一个 Agent 自动选择了平台 Key；当前会话保持原身份，
+    // 用户需要通过“新建会话”明确确认后才能切换，避免消息上下文串到其他 Agent。
+    message.info('调试身份中的 Agent 已变化，请新建会话后再切换')
+    return
+  }
+
   const userChanged = externalUserId.value !== context.externalUserId
   externalUserId.value = context.externalUserId
   businessAuthorization.value = context.businessAuthorization
-
-  if (context.agentId && context.agentId !== selectedAgentId.value) {
-    await onAgentChange(context.agentId)
-    return
-  }
 
   const selectedOption = platformAccessOptions.value.find(
     (option) => option.platform_id === context.platformId,
@@ -896,14 +917,104 @@ async function syncDebugContextToInvokePage(): Promise<void> {
   }
 }
 
-/** 新建会话 */
-function newConversation() {
-  conversationId.value = ''
-  messages.value = []
-  input.value = ''
-  uploadedFiles.value = []
-  stickToBottom.value = true
-  message.success('已新建会话')
+/** 打开新建会话弹窗；候选 Agent 在确认前不会影响当前聊天。 */
+async function openNewConversationDialog(preferredAgentId = ''): Promise<void> {
+  if (running.value) return
+  const savedContext = readBusinessDebugContext()
+  refreshDebugIdentitySummary()
+  pendingAgentId.value = preferredAgentId || selectedAgentId.value || savedContext.agentId || ''
+  pendingPlatformId.value = undefined
+  pendingPlatformAccessOptions.value = []
+  newConversationModalOpen.value = true
+  if (pendingAgentId.value) {
+    await loadPendingPlatformOptions(pendingAgentId.value)
+  }
+}
+
+/** 响应页面上的“新建会话”操作。 */
+function newConversation(): void {
+  void openNewConversationDialog()
+}
+
+/** 加载候选 Agent 的业务平台，单平台或已保存平台会自动选中。 */
+async function loadPendingPlatformOptions(agentId: string): Promise<void> {
+  newConversationPreparing.value = true
+  pendingPlatformId.value = undefined
+  pendingPlatformAccessOptions.value = []
+  try {
+    const options = await getAgentPlatformAccessOptions(agentId)
+    pendingPlatformAccessOptions.value = options
+
+    const savedContext = readBusinessDebugContext()
+    const savedOption = savedContext.agentId === agentId
+      ? options.find((option) => option.platform_id === savedContext.platformId)
+      : undefined
+    if (savedOption) {
+      pendingPlatformId.value = savedOption.platform_id
+    } else if (options.length === 1) {
+      pendingPlatformId.value = options[0].platform_id
+    }
+  } finally {
+    newConversationPreparing.value = false
+  }
+}
+
+/** 候选 Agent 变化时重新确定该 Agent 可用的业务平台。 */
+async function onPendingAgentChange(agentId: string): Promise<void> {
+  pendingAgentId.value = agentId
+  await loadPendingPlatformOptions(agentId)
+}
+
+/** 确认 Agent 和业务平台后创建一段空会话，并锁定当前会话 Agent。 */
+async function confirmNewConversation(): Promise<void> {
+  if (!pendingAgentId.value || !pendingPlatformId.value) {
+    message.warning('请选择 Agent 和业务平台')
+    return
+  }
+
+  const selectedPlatform = pendingPlatformAccessOptions.value.find(
+    (platform) => platform.platform_id === pendingPlatformId.value,
+  )
+  if (!selectedPlatform) {
+    message.warning('所选业务平台无效，请重新选择')
+    return
+  }
+
+  const savedContext = readBusinessDebugContext()
+  if (!savedContext.externalUserId.trim()) {
+    message.warning('请先在右上角配置调试身份中的外部用户 ID')
+    return
+  }
+
+  const resolvedApiKey = selectedPlatform.api_key
+    || (savedContext.platformId === selectedPlatform.platform_id ? savedContext.platformApiKey : '')
+  if (!resolvedApiKey.trim()) {
+    message.warning(`业务平台“${selectedPlatform.platform_name}”没有可用 API Key，请先配置调试身份`)
+    return
+  }
+
+  newConversationPreparing.value = true
+  try {
+    await onAgentChange(pendingAgentId.value)
+    selectedPlatformId.value = selectedPlatform.platform_id
+    platformApiKey.value = resolvedApiKey
+    externalUserId.value = savedContext.externalUserId
+    businessAuthorization.value = savedContext.businessAuthorization
+
+    // 新会话确认后同步顶部调试身份，使后续会话查询和消息请求使用同一平台上下文。
+    saveBusinessDebugContext({
+      agentId: pendingAgentId.value,
+      platformId: selectedPlatform.platform_id,
+      platformName: selectedPlatform.platform_name,
+      platformApiKey: resolvedApiKey,
+      externalUserId: savedContext.externalUserId,
+      businessAuthorization: savedContext.businessAuthorization,
+    })
+    newConversationModalOpen.value = false
+    message.success(`已新建与 ${agentName.value} 的会话`)
+  } finally {
+    newConversationPreparing.value = false
+  }
 }
 
 /** 保存调用页当前业务身份，供会话接口和 Agent 消息接口统一注入请求头。 */
@@ -1816,7 +1927,7 @@ async function onRun() {
     return
   }
   if (!selectedAgentId.value) {
-    message.warning('请先选择一个 Agent')
+    message.warning('请先新建会话并选择 Agent')
     return
   }
   const text = input.value.trim() || '请查看我上传的附件内容。'
@@ -1902,10 +2013,8 @@ onMounted(async () => {
   window.addEventListener(BUSINESS_DEBUG_CONTEXT_CHANGED, syncDebugContextToInvokePage)
   await Promise.all([loadAgentList(), loadKnowledgeBaseOptions()])
   const initialAgentId = (route.query.agent_id as string) || readBusinessDebugContext().agentId
-  if (initialAgentId) {
-    selectedAgentId.value = initialAgentId
-    await loadAgentDetail(initialAgentId)
-  }
+  // 首次进入调用页也通过新建会话弹窗确认 Agent，避免页面加载后出现可随意切换的 Agent 下拉框。
+  await openNewConversationDialog(initialAgentId)
 })
 onBeforeUnmount(() => {
   window.removeEventListener(BUSINESS_DEBUG_CONTEXT_CHANGED, syncDebugContextToInvokePage)
@@ -1913,17 +2022,6 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.credential-bar {
-  display: grid;
-  grid-template-columns: 1.2fr 1.2fr 1fr 1.3fr;
-  gap: 10px;
-  padding: 10px 16px;
-  border-bottom: 1px solid #e5e7eb;
-  background: #fff;
-}
-.credential-input {
-  min-width: 0;
-}
 /* ========== 整体页面 ========== */
 .invoke-page {
   display: flex;
@@ -1935,82 +2033,59 @@ onBeforeUnmount(() => {
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
 }
 
-/* ========== 顶部 Header ========== */
-.invoke-header {
+/* ========== 当前会话工具栏 ========== */
+.conversation-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 24px;
+  min-height: 58px;
+  padding: 9px 18px;
   background: rgba(255, 255, 255, 0.85);
   backdrop-filter: blur(12px);
   border-bottom: 1px solid rgba(0, 0, 0, 0.06);
   z-index: 10;
 }
-.header-left {
+.current-agent-summary {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
+  min-width: 0;
 }
-.header-logo {
-  width: 44px;
-  height: 44px;
-  border-radius: 12px;
+.current-agent-avatar {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  border-radius: 10px;
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 22px;
-  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+  font-size: 18px;
+  box-shadow: 0 3px 10px rgba(102, 126, 234, 0.24);
 }
-.header-title {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.title-main {
-  font-size: 16px;
+.current-agent-name {
+  overflow: hidden;
+  color: #1f2937;
+  font-size: 14px;
   font-weight: 600;
-  color: #1f1f1f;
-  letter-spacing: 0.3px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.title-sub {
-  font-size: 12px;
-  color: #8c8c8c;
+.current-agent-tip {
+  margin-top: 1px;
+  color: #94a3b8;
+  font-size: 11px;
 }
-.agent-info {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-.agent-info-placeholder {
-  color: #bfbfbf;
-}
-.status-dot {
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #52c41a;
-  box-shadow: 0 0 0 2px rgba(82, 196, 26, 0.2);
-  animation: pulse 2s infinite;
-}
-.status-dot.status-disabled {
-  background: #bfbfbf;
-  box-shadow: 0 0 0 2px rgba(191, 191, 191, 0.2);
-}
-@keyframes pulse {
-  0%, 100% { box-shadow: 0 0 0 2px rgba(82, 196, 26, 0.2); }
-  50% { box-shadow: 0 0 0 4px rgba(82, 196, 26, 0.1); }
-}
-.header-right {
+.conversation-actions {
   display: flex;
   align-items: center;
   gap: 8px;
 }
-.agent-select {
-  width: 240px;
-}
 .history-btn {
+  height: 36px;
+  border-radius: 8px;
+}
+.new-conversation-btn {
   height: 36px;
   border-radius: 8px;
 }
@@ -2022,6 +2097,20 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   border-radius: 8px;
+}
+.new-conversation-alert {
+  margin-bottom: 18px;
+}
+.new-conversation-warning {
+  margin-top: 6px;
+  color: #d48806;
+  font-size: 12px;
+}
+.new-conversation-help {
+  margin-top: 6px;
+  color: #8c8c8c;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 /* ========== 当前用户与 Agent 的历史会话抽屉 ========== */
@@ -2922,5 +3011,35 @@ onBeforeUnmount(() => {
 }
 .hint-waiting {
   color: #d46b08;
+}
+
+/* 窄屏下保留 Agent 身份和核心操作，避免工具栏按钮挤压聊天区域。 */
+@media (max-width: 768px) {
+  .conversation-toolbar {
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 12px;
+  }
+
+  .current-agent-tip {
+    display: none;
+  }
+
+  .conversation-actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .history-btn {
+    padding-inline: 10px;
+  }
+
+  .message-area {
+    padding: 16px 12px;
+  }
+
+  .input-area {
+    padding: 12px;
+  }
 }
 </style>

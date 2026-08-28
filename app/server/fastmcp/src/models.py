@@ -30,8 +30,7 @@ class MCPToolRecord(SQLModel, table=True):
     static_headers: dict[str, Any] | None = Field(default=None, sa_column=Column(JSONB, nullable=True))
     parameters: list[dict[str, Any]] | None = Field(default=None, sa_column=Column(JSONB, nullable=True))
 
-    auth_type: str = Field(default="none", max_length=50)
-    auth_config: dict[str, Any] | None = Field(default=None, sa_column=Column(JSONB, nullable=True))
+    business_token_header: str | None = Field(default=None, max_length=150)
     input_schema: dict[str, Any] | None = Field(default=None, sa_column=Column(JSONB, nullable=True))
     output_schema: dict[str, Any] | None = Field(default=None, sa_column=Column(JSONB, nullable=True))
 

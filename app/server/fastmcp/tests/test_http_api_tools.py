@@ -5,7 +5,11 @@ import httpx
 from fastmcp import Client, FastMCP
 from pydantic import ValidationError
 
-from app.server.fastmcp.src.executor import HTTPAPIToolExecutor, HTTPToolExecutionResult
+from app.server.fastmcp.src.executor import (
+    HTTPAPIToolExecutor,
+    HTTPToolExecutionError,
+    HTTPToolExecutionResult,
+)
 from app.server.fastmcp.src.registry import FastMCPToolRegistry
 from app.server.fastmcp.src.schemas import MCPToolUpsertRequest, MCPToolView
 
@@ -20,9 +24,7 @@ class HTTPAPIToolExecutorTestCase(unittest.IsolatedAsyncioTestCase):
             platform_ids=[1],
             api_url="http://business.test/jobs/{job_id}",
             http_method="POST",
-            static_headers={"X-App-Id": "ai-platform"},
-            auth_type="bearer",
-            auth_config={"token": "secret-token"},
+            static_headers={"X-App-Id": "ai-platform", "Authorization": "Bearer secret-token"},
             parameters=[
                 {"name": "job_id", "location": "path", "source": "tool", "required": True},
                 {"name": "page", "location": "query", "source": "tool", "data_type": "integer", "default": 1},
@@ -127,14 +129,13 @@ class HTTPAPIToolExecutorTestCase(unittest.IsolatedAsyncioTestCase):
                 ],
             )
 
-    async def test_runtime_bearer_uses_only_runtime_credentials(self) -> None:
-        """runtime_bearer 应使用独立运行时凭证，并覆盖固定 Authorization 请求头。"""
+    async def test_business_token_uses_configured_header_verbatim(self) -> None:
+        """业务凭证应使用 Tool 配置的目标请求头，并保持值完全不变。"""
         request = MCPToolUpsertRequest(
             name="query_order",
             platform_ids=[1],
             api_url="http://business.test/orders",
-            static_headers={"Authorization": "Bearer unsafe-static-token"},
-            auth_type="runtime_bearer",
+            business_token_header="X-Token",
         )
         tool_view = MCPToolView(**request.model_dump(), input_schema=request.build_input_schema())
         captured_request: dict = {}
@@ -152,26 +153,101 @@ class HTTPAPIToolExecutorTestCase(unittest.IsolatedAsyncioTestCase):
             await HTTPAPIToolExecutor().execute(
                 tool_view,
                 {},
-                runtime_credentials={"authorization": "Bearer current-user-token"},
+                runtime_credentials={"business_token": "current-user-token"},
             )
 
         self.assertEqual(
-            captured_request["headers"]["Authorization"],
-            "Bearer current-user-token",
+            captured_request["headers"]["X-Token"],
+            "current-user-token",
         )
 
-    async def test_runtime_bearer_rejects_missing_runtime_credentials(self) -> None:
-        """runtime_bearer 缺少本次用户 Token 时必须在发出 HTTP 请求前失败。"""
+    async def test_business_token_rejects_missing_runtime_credentials(self) -> None:
+        """Tool 配置目标请求头后，缺少用户凭证时必须在 HTTP 请求前失败。"""
         request = MCPToolUpsertRequest(
             name="query_order",
             platform_ids=[1],
             api_url="http://business.test/orders",
-            auth_type="runtime_bearer",
+            business_token_header="X-Token",
         )
         tool_view = MCPToolView(**request.model_dump(), input_schema=request.build_input_schema())
 
-        with self.assertRaisesRegex(RuntimeError, "未提供业务平台用户凭证"):
+        with self.assertRaises(HTTPToolExecutionError) as error_context:
             await HTTPAPIToolExecutor().execute(tool_view, {}, runtime_credentials={})
+        self.assertEqual(error_context.exception.code, "BUSINESS_CREDENTIAL_MISSING")
+
+    async def test_business_token_rejects_control_characters(self) -> None:
+        """业务凭证包含换行等控制字符时必须拒绝，避免目标 Header 注入。"""
+        request = MCPToolUpsertRequest(
+            name="query_order",
+            platform_ids=[1],
+            api_url="http://business.test/orders",
+            business_token_header="X-Token",
+        )
+        tool_view = MCPToolView(**request.model_dump(), input_schema=request.build_input_schema())
+
+        with self.assertRaises(HTTPToolExecutionError) as error_context:
+            await HTTPAPIToolExecutor().execute(
+                tool_view,
+                {},
+                runtime_credentials={"business_token": "unsafe\r\nX-Forged: true"},
+            )
+        self.assertEqual(error_context.exception.code, "BUSINESS_CREDENTIAL_INVALID_FORMAT")
+
+    async def test_business_token_header_conflicts_are_rejected(self) -> None:
+        """业务 Token 请求头不能与固定请求头或普通 Header 参数映射重名。"""
+        with self.assertRaises(ValidationError):
+            MCPToolUpsertRequest(
+                name="static_conflict",
+                platform_ids=[1],
+                api_url="http://business.test/orders",
+                static_headers={"x-token": "fixed"},
+                business_token_header="X-Token",
+            )
+
+        with self.assertRaises(ValidationError):
+            MCPToolUpsertRequest(
+                name="parameter_conflict",
+                platform_ids=[1],
+                api_url="http://business.test/orders",
+                business_token_header="X-Token",
+                parameters=[
+                    {"name": "x-token", "location": "header", "source": "tool"},
+                ],
+            )
+
+    async def test_business_api_permission_statuses_use_stable_error_codes(self) -> None:
+        """目标业务 API 的 401 和 403 应转换为稳定且不包含响应正文的权限错误。"""
+        request = MCPToolUpsertRequest(
+            name="query_order",
+            platform_ids=[1],
+            api_url="http://business.test/orders",
+            business_token_header="X-Token",
+        )
+        tool_view = MCPToolView(**request.model_dump(), input_schema=request.build_input_schema())
+
+        for status_code, expected_code in (
+            (401, "BUSINESS_CREDENTIAL_INVALID"),
+            (403, "BUSINESS_PERMISSION_DENIED"),
+        ):
+            async def return_permission_error(_client, **request_kwargs):
+                """返回包含敏感模拟正文的目标业务权限错误。"""
+                return httpx.Response(
+                    status_code=status_code,
+                    json={"detail": "sensitive-business-detail"},
+                    request=httpx.Request(request_kwargs["method"], request_kwargs["url"]),
+                )
+
+            with self.subTest(status_code=status_code):
+                with patch.object(httpx.AsyncClient, "request", new=return_permission_error):
+                    with self.assertRaises(HTTPToolExecutionError) as error_context:
+                        await HTTPAPIToolExecutor().execute(
+                            tool_view,
+                            {},
+                            runtime_credentials={"business_token": "current-user-token"},
+                        )
+                self.assertEqual(error_context.exception.code, expected_code)
+                self.assertEqual(error_context.exception.status_code, status_code)
+                self.assertNotIn("sensitive-business-detail", str(error_context.exception))
 
 
 class FastMCPToolRegistryTestCase(unittest.IsolatedAsyncioTestCase):
@@ -192,7 +268,6 @@ class FastMCPToolRegistryTestCase(unittest.IsolatedAsyncioTestCase):
             description="搜索职位",
             api_url="http://business.test/jobs",
             http_method="GET",
-            auth_type="none",
             timeout_seconds=30,
             status="enabled",
             input_schema={

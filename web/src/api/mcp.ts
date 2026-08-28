@@ -31,8 +31,7 @@ export interface McpToolUpsertRequest {
   http_method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
   static_headers: Record<string, unknown>
   parameters: McpToolParameter[]
-  auth_type: 'none' | 'bearer' | 'basic' | 'api_key' | 'runtime_bearer'
-  auth_config: Record<string, unknown>
+  business_token_header?: string | null
   output_schema?: Record<string, any> | null
   timeout_seconds: number
   status: 'draft' | 'enabled' | 'disabled'

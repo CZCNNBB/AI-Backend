@@ -101,11 +101,11 @@ class AgentA2AConfig(BaseModel):
 class AgentRuntimeCredentials(BaseModel):
     """仅在本次 Agent 执行期间使用的敏感业务凭证。"""
 
-    authorization: str | None = Field(
+    business_token: str | None = Field(
         default=None,
         exclude=True,
         repr=False,
-        description="透传给 runtime_bearer MCP Tool 的完整 Authorization 值",
+        description="来自 X-Business-Authorization、仅供 MCP Tool 原样透传的业务用户凭证",
     )
 
 

@@ -26,6 +26,17 @@ class HTTPToolExecutionResult:
     data: Any
 
 
+class HTTPToolExecutionError(RuntimeError):
+    """表示一次可以安全暴露给 Agent 的目标业务 API 调用错误。"""
+
+    def __init__(self, code: str, message: str, *, status_code: int | None = None) -> None:
+        """保存稳定错误码、可读消息和可选 HTTP 状态码。"""
+        self.code = code
+        self.status_code = status_code
+        self.message = message
+        super().__init__(f"{code}: {message}")
+
+
 class HTTPAPIToolExecutor:
     """根据数据库配置执行任意普通 JSON HTTP API。"""
 
@@ -68,10 +79,9 @@ class HTTPAPIToolExecutor:
             elif parameter.location == "body":
                 self._set_nested_value(json_body, parameter.name, parameter_value)
 
-        self._apply_authentication(
+        self._apply_business_token(
             tool,
             request_headers,
-            query_params,
             resolved_runtime_credentials,
         )
 
@@ -93,6 +103,19 @@ class HTTPAPIToolExecutor:
 
         elapsed_ms = int((time.perf_counter() - started_at) * 1000)
         response_data = self._parse_response_data(response)
+        if response.status_code == 401:
+            # 认证失败时不拼接业务响应正文，避免上游把敏感认证细节带入 Agent 上下文。
+            raise HTTPToolExecutionError(
+                "BUSINESS_CREDENTIAL_INVALID",
+                "业务用户凭证无效或已过期",
+                status_code=401,
+            )
+        if response.status_code == 403:
+            raise HTTPToolExecutionError(
+                "BUSINESS_PERMISSION_DENIED",
+                "当前业务用户没有执行该操作的权限",
+                status_code=403,
+            )
         if not response.is_success:
             # 错误正文限制长度，避免上游返回超大 HTML 时污染 MCP 错误消息。
             error_preview = str(response_data)[:1000]
@@ -129,55 +152,31 @@ class HTTPAPIToolExecutor:
             raise RuntimeError(f"缺少必填参数: {parameter.name}")
         return False, None
 
-    def _apply_authentication(
+    def _apply_business_token(
         self,
         tool: MCPToolView,
         headers: dict[str, str],
-        query_params: dict[str, Any],
         runtime_credentials: dict[str, str],
     ) -> None:
-        """把平台保存的认证配置注入请求，认证值不会暴露给 Agent。"""
-        auth_config = tool.auth_config or {}
-        if tool.auth_type == "none":
+        """按 Tool 配置把本次业务用户凭证原样写入目标 API 请求头。"""
+        target_header_name = tool.business_token_header
+        if not target_header_name:
             return
 
-        if tool.auth_type == "bearer":
-            token = str(auth_config.get("token") or "").strip()
-            if not token:
-                raise RuntimeError("Bearer 认证缺少 auth_config.token")
-            headers["Authorization"] = f"Bearer {token}"
-            return
+        credential_value = runtime_credentials.get("business_token")
+        if credential_value in (None, ""):
+            raise HTTPToolExecutionError(
+                "BUSINESS_CREDENTIAL_MISSING",
+                "当前操作需要业务用户凭证，请重新登录或重新发起请求",
+            )
 
-        if tool.auth_type == "runtime_bearer":
-            authorization = str(runtime_credentials.get("authorization") or "").strip()
-            if not authorization:
-                raise RuntimeError("当前调用未提供业务平台用户凭证")
-            # 调用方推荐传入完整的 Bearer 值；只传裸 Token 时在此统一补齐前缀。
-            if " " not in authorization:
-                authorization = f"Bearer {authorization}"
-            headers["Authorization"] = authorization
-            return
-
-        if tool.auth_type == "basic":
-            username = str(auth_config.get("username") or "")
-            password = str(auth_config.get("password") or "")
-            encoded_credentials = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
-            headers["Authorization"] = f"Basic {encoded_credentials}"
-            return
-
-        if tool.auth_type == "api_key":
-            key_name = str(auth_config.get("name") or "").strip()
-            key_value = str(auth_config.get("value") or "")
-            key_location = str(auth_config.get("location") or "header").lower()
-            if not key_name or not key_value:
-                raise RuntimeError("API Key 认证缺少 auth_config.name 或 auth_config.value")
-            if key_location == "query":
-                query_params[key_name] = key_value
-            else:
-                headers[key_name] = key_value
-            return
-
-        raise RuntimeError(f"暂不支持的认证类型: {tool.auth_type}")
+        # 凭证内容保持原样，平台不添加 Bearer 等前缀；仅拒绝可能造成 Header 注入的控制字符。
+        if any(ord(character) < 32 or ord(character) == 127 for character in credential_value):
+            raise HTTPToolExecutionError(
+                "BUSINESS_CREDENTIAL_INVALID_FORMAT",
+                "业务用户凭证包含非法控制字符",
+            )
+        headers[target_header_name] = credential_value
 
     @staticmethod
     def _read_runtime_inputs_from_mcp_request() -> dict[str, Any]:

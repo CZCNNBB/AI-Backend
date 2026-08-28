@@ -1,3 +1,4 @@
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -7,8 +8,10 @@ HTTPMethod = Literal["GET", "POST", "PUT", "PATCH", "DELETE"]
 ParameterLocation = Literal["path", "query", "header", "body"]
 ParameterSource = Literal["tool", "runtime", "static"]
 ParameterType = Literal["string", "integer", "number", "boolean", "object", "array"]
-AuthType = Literal["none", "bearer", "basic", "api_key", "runtime_bearer"]
 RecordStatus = Literal["draft", "enabled", "disabled"]
+
+# HTTP Header Name 只能使用 RFC 9110 token 字符，提前校验可避免请求走到 httpx 才失败。
+HTTP_HEADER_NAME_PATTERN = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 
 
 class MCPToolParameter(BaseModel):
@@ -81,8 +84,11 @@ class MCPToolUpsertRequest(BaseModel):
     http_method: HTTPMethod = Field(default="POST", description="目标 API 请求方法")
     static_headers: dict[str, Any] = Field(default_factory=dict, description="固定发送的 HTTP 请求头")
     parameters: list[MCPToolParameter] = Field(default_factory=list, description="API 参数映射列表")
-    auth_type: AuthType = Field(default="none", description="目标 API 认证类型")
-    auth_config: dict[str, Any] = Field(default_factory=dict, description="仅由平台使用的认证配置")
+    business_token_header: str | None = Field(
+        default=None,
+        max_length=150,
+        description="接收本次业务用户凭证的目标 API 请求头；为空时不透传",
+    )
     output_schema: dict[str, Any] | None = Field(default=None, description="可选的工具输出 JSON Schema")
     timeout_seconds: float = Field(default=30.0, gt=0, le=600, description="目标 API 超时时间")
     status: RecordStatus = Field(default="draft", description="draft 不发布，enabled 发布为 MCP Tool")
@@ -105,13 +111,42 @@ class MCPToolUpsertRequest(BaseModel):
         stripped = value.strip()
         return stripped or None
 
+    @field_validator("business_token_header")
+    @classmethod
+    def validate_business_token_header(cls, value: str | None) -> str | None:
+        """清理并校验目标业务 Token 请求头名称。"""
+        if value is None:
+            return None
+        normalized_value = value.strip()
+        if not normalized_value:
+            return None
+        if not HTTP_HEADER_NAME_PATTERN.fullmatch(normalized_value):
+            raise ValueError("业务 Token 目标请求头不是合法的 HTTP Header Name")
+        return normalized_value
+
     @model_validator(mode="after")
     def validate_parameter_names(self) -> "MCPToolUpsertRequest":
-        """保证参数名称唯一，避免同一输入被多个不明确规则重复消费。"""
+        """保证参数名称唯一，并拒绝业务 Token 请求头与其他请求头配置冲突。"""
         parameter_names = [parameter.name for parameter in self.parameters]
         duplicate_names = sorted({name for name in parameter_names if parameter_names.count(name) > 1})
         if duplicate_names:
             raise ValueError(f"参数名称不能重复: {', '.join(duplicate_names)}")
+
+        if not self.business_token_header:
+            return self
+
+        normalized_token_header = self.business_token_header.casefold()
+        static_header_names = {str(name).strip().casefold() for name in self.static_headers}
+        if normalized_token_header in static_header_names:
+            raise ValueError("业务 Token 目标请求头不能与固定请求头重名")
+
+        mapped_header_names = {
+            parameter.name.casefold()
+            for parameter in self.parameters
+            if parameter.location == "header"
+        }
+        if normalized_token_header in mapped_header_names:
+            raise ValueError("业务 Token 目标请求头不能与 Header 参数映射重名")
         return self
 
     def build_input_schema(self) -> dict[str, Any]:
@@ -256,8 +291,7 @@ class MCPToolView(BaseModel):
     http_method: str
     static_headers: dict[str, Any] = Field(default_factory=dict)
     parameters: list[MCPToolParameter] = Field(default_factory=list)
-    auth_type: str
-    auth_config: dict[str, Any] = Field(default_factory=dict)
+    business_token_header: str | None = None
     input_schema: dict[str, Any] = Field(default_factory=dict)
     output_schema: dict[str, Any] | None = None
     timeout_seconds: float

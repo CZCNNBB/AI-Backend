@@ -251,7 +251,6 @@ class AgentSessionLifecycleTestCase(unittest.IsolatedAsyncioTestCase):
             name="job_search",
             api_url="http://127.0.0.1:8080/api/jobs/search",
             http_method="POST",
-            auth_type="none",
             timeout_seconds=30,
             status="enabled",
         )

@@ -30,7 +30,7 @@ def upsert_mcp_tool(
     request: MCPToolUpsertRequest,
     db: Session = Depends(get_postgres_engine),
 ):
-    """保存 HTTP API、参数映射和认证配置，并按状态热更新 Tool。"""
+    """保存 HTTP API、参数映射和业务 Token 目标请求头，并按状态热更新 Tool。"""
     result = mcp_tool_service.upsert_tool(db, request)
     return Result.success(result)
 
@@ -93,7 +93,7 @@ async def test_mcp_tool(
     ] = None,
     db: Session = Depends(get_postgres_engine),
 ):
-    """使用测试参数验证请求组装、认证配置和目标 API 连通性。"""
+    """使用测试参数验证请求组装、业务 Token 透传和目标 API 连通性。"""
     result = await mcp_tool_service.test_tool(
         db,
         request,

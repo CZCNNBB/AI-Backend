@@ -264,8 +264,7 @@ CREATE TABLE IF NOT EXISTS mcp.mcp_tools (
     http_method VARCHAR(10) NOT NULL DEFAULT 'POST',
     static_headers JSONB NOT NULL DEFAULT '{}'::jsonb,
     parameters JSONB NOT NULL DEFAULT '[]'::jsonb,
-    auth_type VARCHAR(50) NOT NULL DEFAULT 'none',
-    auth_config JSONB NOT NULL DEFAULT '{}'::jsonb,
+    business_token_header VARCHAR(150),
     input_schema JSONB NOT NULL DEFAULT '{"type":"object","properties":{},"additionalProperties":false}'::jsonb,
     output_schema JSONB,
     timeout_seconds DOUBLE PRECISION NOT NULL DEFAULT 30,
@@ -273,7 +272,6 @@ CREATE TABLE IF NOT EXISTS mcp.mcp_tools (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT ck_mcp_tools_http_method CHECK (http_method IN ('GET', 'POST', 'PUT', 'PATCH', 'DELETE')),
-    CONSTRAINT ck_mcp_tools_auth_type CHECK (auth_type IN ('none', 'bearer', 'basic', 'api_key', 'runtime_bearer')),
     CONSTRAINT ck_mcp_tools_status CHECK (status IN ('draft', 'enabled', 'disabled')),
     CONSTRAINT ck_mcp_tools_timeout CHECK (timeout_seconds > 0 AND timeout_seconds <= 600)
 );
@@ -291,7 +289,7 @@ COMMENT ON TABLE mcp.mcp_tools IS '普通 HTTP API 转换型 MCP Tool 配置表�
 COMMENT ON COLUMN mcp.mcp_tools.name IS '全局唯一的 MCP 真实工具名，Agent 模板直接引用该名称。';
 COMMENT ON COLUMN mcp.mcp_tools.api_url IS '目标业务 HTTP API 地址。';
 COMMENT ON COLUMN mcp.mcp_tools.parameters IS 'Tool/runtime/static 参数的 HTTP 位置映射。';
-COMMENT ON COLUMN mcp.mcp_tools.auth_config IS '目标 API 认证配置。';
+COMMENT ON COLUMN mcp.mcp_tools.business_token_header IS '可选的目标业务 Token 请求头；值来自本次 X-Business-Authorization 并原样透传。';
 COMMENT ON COLUMN mcp.mcp_tools.input_schema IS '平台自动生成的 MCP Tool 输入 JSON Schema。';
 COMMENT ON COLUMN mcp.mcp_tools.output_schema IS '工具输出参数 JSON Schema。';
 

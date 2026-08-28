@@ -244,7 +244,7 @@ export const apiDocs: ApiDoc[] = [
     summary: '外部业务平台统一的 Agent 调用入口；stream=false 返回 JSON，stream=true 返回 SSE。',
     headers: [
       { name: 'X-API-Key', type: 'string', required: true, description: '识别调用方业务平台的 API Key' },
-      { name: 'X-Business-Authorization', type: 'string', description: '可选，透传给 runtime_bearer MCP Tool 的业务用户 Token，例如 Bearer xxx' },
+      { name: 'X-Business-Authorization', type: 'string', description: '可选，按 MCP Tool 的 business_token_header 配置原样透传给目标业务 API' },
       { name: 'Content-Type', type: 'string', required: true, description: '固定为 application/json' },
     ],
     requestFields: [

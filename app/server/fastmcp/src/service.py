@@ -53,8 +53,7 @@ class MCPToolService:
             http_method=request.http_method,
             static_headers=request.static_headers,
             parameters=[parameter.model_dump(mode="json") for parameter in request.parameters],
-            auth_type=request.auth_type,
-            auth_config=request.auth_config,
+            business_token_header=request.business_token_header,
             input_schema=request.build_input_schema(),
             output_schema=request.output_schema,
             timeout_seconds=request.timeout_seconds,
@@ -140,7 +139,7 @@ class MCPToolService:
         *,
         business_authorization: str | None = None,
     ) -> MCPToolTestResponse:
-        """不经过 Agent，直接验证参数映射、认证配置和目标 API 连通性。"""
+        """不经过 Agent，直接验证参数映射、业务 Token 透传和目标 API 连通性。"""
         if request.tool is not None:
             tool_view = self._request_to_tool_view(request.tool)
         else:
@@ -186,7 +185,7 @@ class MCPToolService:
         """把管理调试接口请求头转换为执行器使用的临时凭证字典。"""
         if not business_authorization:
             return {}
-        return {"authorization": business_authorization}
+        return {"business_token": business_authorization}
 
     def get_enabled_tool_views(self, db: Session, tool_names: list[str]) -> list[MCPToolView]:
         """在短事务内查询并复制 Agent 指定的已发布 Tool 配置。"""
@@ -221,8 +220,7 @@ class MCPToolService:
             http_method=request.http_method,
             static_headers=request.static_headers,
             parameters=request.parameters,
-            auth_type=request.auth_type,
-            auth_config=request.auth_config,
+            business_token_header=request.business_token_header,
             input_schema=request.build_input_schema(),
             output_schema=request.output_schema,
             timeout_seconds=request.timeout_seconds,
@@ -248,8 +246,7 @@ class MCPToolService:
             http_method=record.http_method,
             static_headers=dict(record.static_headers or {}),
             parameters=[MCPToolParameter.model_validate(item) for item in (record.parameters or [])],
-            auth_type=record.auth_type,
-            auth_config=dict(record.auth_config or {}),
+            business_token_header=record.business_token_header,
             input_schema=dict(record.input_schema or {}),
             output_schema=dict(record.output_schema) if record.output_schema else None,
             timeout_seconds=record.timeout_seconds,

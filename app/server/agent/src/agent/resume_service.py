@@ -133,8 +133,8 @@ class AgentResumeService:
             platform_id=resume_request.platform_id,
             external_user_id=resume_request.external_user_id,
             runtime_credentials=(
-                {"authorization": resume_request.runtime_credentials.authorization}
-                if resume_request.runtime_credentials.authorization
+                {"business_token": resume_request.runtime_credentials.business_token}
+                if resume_request.runtime_credentials.business_token
                 else {}
             ),
             query=getattr(run_row, "query", None) or resolved_request.query,

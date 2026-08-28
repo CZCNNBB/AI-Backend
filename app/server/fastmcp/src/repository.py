@@ -31,8 +31,7 @@ class MCPToolRepository:
         http_method: str,
         static_headers: dict,
         parameters: list[dict],
-        auth_type: str,
-        auth_config: dict,
+        business_token_header: str | None,
         input_schema: dict,
         output_schema: dict | None,
         timeout_seconds: float,
@@ -49,8 +48,7 @@ class MCPToolRepository:
         record.http_method = http_method
         record.static_headers = static_headers
         record.parameters = parameters
-        record.auth_type = auth_type
-        record.auth_config = auth_config
+        record.business_token_header = business_token_header
         record.input_schema = input_schema
         record.output_schema = output_schema
         record.timeout_seconds = timeout_seconds

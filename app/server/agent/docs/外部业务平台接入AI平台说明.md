@@ -136,7 +136,8 @@ X-Business-Authorization: Bearer eyJhbGciOi...
 - AI-backend 不使用它认证调用方平台。
 - AI-backend 不解析其中的用户角色和业务权限。
 - 它只保存在本次运行的内存上下文中。
-- 配置为 `runtime_bearer` 的 MCP Tool 会把它作为目标业务 API 的 `Authorization` 请求头。
+- MCP Tool 通过 `business_token_header` 配置目标 API 实际接收凭证的请求头名称。
+- AI-backend 将该值原样转发，不自动增加或删除 `Bearer ` 等前缀。
 - 目标业务 API 返回无权限时，Agent 会收到该工具调用失败结果。
 
 业务 Token 不应持久化到 Agent 会话、Checkpoint、运行记录或日志。
@@ -526,7 +527,7 @@ def send_message(api_key: str, business_token: str | None = None) -> dict:
 4. SSE 中的 `error` 事件。
 5. MCP Tool 返回的目标业务 API 无权限、参数错误或服务异常。
 
-不要把完整 API Key、业务用户 Token、固定认证头或 MCP `auth_config` 写入错误日志。日志中只记录平台编码、Key 前缀、`external_user_id`、`conversation_id` 和 `run_id` 即可。
+不要把完整 API Key、业务用户 Token 或固定认证头写入错误日志。日志中只记录平台编码、Key 前缀、`external_user_id`、`conversation_id` 和 `run_id` 即可。
 
 ## 11. 联调检查清单
 

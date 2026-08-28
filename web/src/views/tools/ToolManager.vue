@@ -52,6 +52,9 @@
                   </a-tag>
                 </a-space>
               </a-descriptions-item>
+              <a-descriptions-item label="业务 Token 目标请求头">
+                {{ selectedTool.business_token_header || '不透传' }}
+              </a-descriptions-item>
               <a-descriptions-item label="超时">{{ selectedTool.timeout_seconds }} 秒</a-descriptions-item>
             </a-descriptions>
 
@@ -74,6 +77,15 @@
                   class="mb-4"
                   message="当前 Tool 尚未发布，请先发布后再通过 MCP 调用。"
                 />
+                <a-form-item
+                  v-if="selectedTool.business_token_header"
+                  :label="`本次测试业务用户凭证 → ${selectedTool.business_token_header}`"
+                >
+                  <a-input-password
+                    v-model:value="businessAuthorization"
+                    placeholder="原样转发，只用于本次调用，不保存"
+                  />
+                </a-form-item>
                 <a-textarea v-model:value="argsJsonText" :rows="9" class="json-input" />
                 <a-space class="mt-3">
                   <a-button
@@ -189,7 +201,7 @@
         </div>
         <a-button block type="dashed" @click="addParameter">新增参数</a-button>
 
-        <a-divider orientation="left">请求头与认证</a-divider>
+        <a-divider orientation="left">请求头与业务用户凭证</a-divider>
         <a-row :gutter="12">
           <a-col :span="12">
             <a-form-item label="固定请求头 JSON">
@@ -197,16 +209,20 @@
             </a-form-item>
           </a-col>
           <a-col :span="12">
-            <a-form-item label="认证类型">
-              <a-select v-model:value="createForm.auth_type" :options="authTypeOptions" />
+            <a-form-item label="业务 Token 目标请求头（可选）">
+              <a-input
+                v-model:value="createForm.business_token_header"
+                allow-clear
+                placeholder="例如 X-Token；为空时不透传"
+              />
+              <div class="form-tip">
+                Token 来自 X-Business-Authorization，平台不解析内容、不补 Bearer 前缀，并原样转发。
+              </div>
             </a-form-item>
-            <a-form-item label="认证配置 JSON">
-              <a-textarea v-model:value="authConfigText" :rows="2" placeholder='Bearer：{"token":"..."}' />
-            </a-form-item>
-            <a-form-item v-if="createForm.auth_type === 'runtime_bearer'" label="本次测试业务用户 Token">
+            <a-form-item v-if="createForm.business_token_header?.trim()" label="本次测试业务用户凭证">
               <a-input-password
                 v-model:value="businessAuthorization"
-                placeholder="Bearer xxxxx；只用于本次测试，不保存"
+                placeholder="只用于本次测试，不保存"
               />
             </a-form-item>
           </a-col>
@@ -261,7 +277,6 @@ const saving = ref(false)
 const testingApi = ref(false)
 const testApiResult = ref('')
 const staticHeadersText = ref('{}')
-const authConfigText = ref('{}')
 const testArgsText = ref('{}')
 const testRuntimeInputsText = ref('{}')
 const businessAuthorization = ref('')
@@ -281,14 +296,6 @@ const sourceOptions = [
 ]
 const locationOptions = ['path', 'query', 'header', 'body'].map((value) => ({ label: value, value }))
 const parameterTypeOptions = ['string', 'integer', 'number', 'boolean', 'object', 'array'].map((value) => ({ label: value, value }))
-const authTypeOptions = [
-  { label: '无认证', value: 'none' },
-  { label: 'Bearer Token', value: 'bearer' },
-  { label: 'Basic Auth', value: 'basic' },
-  { label: 'API Key', value: 'api_key' },
-  { label: '运行时 Bearer（业务用户 Token）', value: 'runtime_bearer' },
-]
-
 const createForm = reactive<McpToolUpsertRequest>(createEmptyForm())
 
 /** 创建一份新的 API Tool 表单初始值。 */
@@ -301,8 +308,7 @@ function createEmptyForm(): McpToolUpsertRequest {
     http_method: 'POST',
     static_headers: {},
     parameters: [],
-    auth_type: 'none',
-    auth_config: {},
+    business_token_header: null,
     output_schema: null,
     timeout_seconds: 30,
     status: 'draft',
@@ -344,7 +350,6 @@ function openCreateModal() {
   editingTool.value = null
   Object.assign(createForm, createEmptyForm())
   staticHeadersText.value = '{}'
-  authConfigText.value = '{}'
   testArgsText.value = '{}'
   testRuntimeInputsText.value = '{}'
   testApiResult.value = ''
@@ -373,8 +378,7 @@ function openEditModal() {
     http_method: selectedTool.value.http_method,
     static_headers: { ...selectedTool.value.static_headers },
     parameters: editableParameters,
-    auth_type: selectedTool.value.auth_type,
-    auth_config: { ...selectedTool.value.auth_config },
+    business_token_header: selectedTool.value.business_token_header || null,
     output_schema: selectedTool.value.output_schema
       ? { ...selectedTool.value.output_schema }
       : null,
@@ -382,7 +386,6 @@ function openEditModal() {
     status: selectedTool.value.status,
   })
   staticHeadersText.value = prettyJson(selectedTool.value.static_headers || {})
-  authConfigText.value = prettyJson(selectedTool.value.auth_config || {})
   testArgsText.value = prettyJson(buildExampleArgs(selectedTool.value.input_schema || {}))
   testRuntimeInputsText.value = '{}'
   testApiResult.value = ''
@@ -444,7 +447,7 @@ function buildToolPayload(): McpToolUpsertRequest {
     description: createForm.description?.trim() || null,
     api_url: createForm.api_url.trim(),
     static_headers: parseJsonObject(staticHeadersText.value, '固定请求头 JSON'),
-    auth_config: parseJsonObject(authConfigText.value, '认证配置 JSON'),
+    business_token_header: createForm.business_token_header?.trim() || null,
     parameters: normalizedParameters,
   }
 }
@@ -527,7 +530,7 @@ async function onCreateMcpTool() {
   }
 }
 
-/** 使用未保存配置测试目标 API、请求头、认证和参数映射。 */
+/** 使用未保存配置测试目标 API、请求头、业务 Token 透传和参数映射。 */
 async function onTestApi() {
   testingApi.value = true
   testApiResult.value = ''
@@ -536,12 +539,14 @@ async function onTestApi() {
       tool: buildToolPayload(),
       args: parseJsonObject(testArgsText.value, 'Tool 参数 JSON'),
       runtime_inputs: parseJsonObject(testRuntimeInputsText.value, 'Runtime inputs JSON'),
-    }, businessAuthorization.value.trim() || undefined)
+    }, businessAuthorization.value || undefined)
     testApiResult.value = prettyJson(response)
     message.success(`API 测试成功，HTTP ${response.status_code}，耗时 ${response.elapsed_ms}ms`)
   } catch (error: any) {
     testApiResult.value = `测试失败：${error?.message || error}`
   } finally {
+    // 调试凭证只保留到本次请求结束，避免在管理页面内长期驻留。
+    businessAuthorization.value = ''
     testingApi.value = false
   }
 }
@@ -558,6 +563,7 @@ async function changePublishStatus(enabled: boolean) {
 function selectTool(tool: McpToolView) {
   selectedTool.value = tool
   result.value = ''
+  businessAuthorization.value = ''
   resetArgsJson()
 }
 
@@ -582,12 +588,14 @@ async function onRun() {
     const response = await invokeMcpTool(
       selectedTool.value.name,
       args,
-      businessAuthorization.value.trim() || undefined,
+      businessAuthorization.value || undefined,
     )
     result.value = prettyJson(response)
   } catch (error: any) {
     result.value = `调用失败：${error?.message || error}`
   } finally {
+    // 已发布 Tool 的调试凭证同样只使用一次，不在组件状态中复用。
+    businessAuthorization.value = ''
     running.value = false
   }
 }
@@ -644,6 +652,7 @@ onMounted(async () => {
 .tool-item:hover { background: #f5f5f5; }
 .tool-item.active { background: #e6f4ff; }
 .tool-desc { color: #6b7280; font-size: 12px; line-height: 1.5; word-break: break-all; }
+.form-tip { margin-top: 4px; color: #8c8c8c; font-size: 12px; line-height: 1.5; }
 .parameter-row { padding: 12px; margin-bottom: 10px; border: 1px solid #e5e7eb; border-radius: 6px; }
 .json-input textarea { font-family: Consolas, Monaco, 'Courier New', monospace; }
 .result-box { margin: 0; padding: 12px; max-height: 420px; overflow: auto; border-radius: 4px; background: #1e1e1e; color: #d4d4d4; font-size: 12px; }

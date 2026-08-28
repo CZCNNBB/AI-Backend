@@ -229,7 +229,7 @@ class AgentMessageService:
             agent_id=request.agent_id,
             platform_id=principal.platform_id,
             external_user_id=request.external_user_id,
-            runtime_credentials=AgentRuntimeCredentials(authorization=business_authorization),
+            runtime_credentials=AgentRuntimeCredentials(business_token=business_authorization),
             query=self._build_query_text(request),
             conversation_id=conversation_id,
             stream=stream,
@@ -277,7 +277,7 @@ class AgentMessageService:
             thread_id=checkpoint_thread_id,
             platform_id=principal.platform_id,
             external_user_id=request.external_user_id,
-            runtime_credentials=AgentRuntimeCredentials(authorization=business_authorization),
+            runtime_credentials=AgentRuntimeCredentials(business_token=business_authorization),
             resume_value=self._build_resume_value(request, pending_run),
             stream=stream,
         )

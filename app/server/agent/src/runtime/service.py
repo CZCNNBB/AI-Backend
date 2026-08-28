@@ -76,10 +76,10 @@ class AgentRuntimeContextService:
     @staticmethod
     def _build_runtime_credentials(request: AgentRunRequest) -> dict[str, str]:
         """复制本次运行凭证，避免后续代码持有请求模型本身。"""
-        authorization = request.runtime_credentials.authorization
-        if not authorization:
+        business_token = request.runtime_credentials.business_token
+        if not business_token:
             return {}
-        return {"authorization": authorization}
+        return {"business_token": business_token}
 
     def get_context_schema(self):
         """获取 LangChain Agent 运行时上下文 schema。

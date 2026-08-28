@@ -210,10 +210,7 @@ mcp.mcp_tools
       "runtime_path": "tenant_id"
     }
   ],
-  "auth_type": "bearer",
-  "auth_config": {
-    "token": "由平台保存的 Token"
-  },
+  "business_token_header": "X-Token",
   "timeout_seconds": 30,
   "status": "draft"
 }
@@ -227,7 +224,10 @@ mcp.mcp_tools
 
 `name` 直接填写目标 API 的参数字段名，同时作为 Agent 可见的 MCP Tool 参数名，不再维护额外字段别名。参数位置支持 `path`、`query`、`header` 和 `body`；body 参数名支持点分路径，例如 `filters.keyword` 会生成嵌套 JSON。
 
-认证由平台独立注入，目前支持 `none`、`bearer`、`basic` 和 `api_key`。Token、密码和 API Key 不会成为模型参数。
+`business_token_header` 为空时不透传业务用户凭证；填写 `X-Token`、`Authorization`
+等合法请求头名称后，FastMCP 会把本次 `X-Business-Authorization` 的值原样写入
+该目标请求头。平台不预设认证类型，也不自动增加 Bearer 前缀。固定请求头或固定
+平台密钥继续使用 `static_headers`，它们不会成为模型参数。
 
 ## 9. 创建 Agent 时发现工具
 
