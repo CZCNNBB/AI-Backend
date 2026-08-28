@@ -9,9 +9,8 @@ Knowledge 是 AI-backend 内部的统一知识库模块。切片、向量化、M
 - 文件服务：保存原始上传文件和转换后的 content.md。
 - Milvus：保存分块向量、全文检索字段和检索元数据。
 
-建表脚本：sql/20260718_create_knowledge_tables.sql。
-
-已有表需要执行迁移：sql/20260722_add_knowledge_document_deleting_status.sql。
+Agent、文件服务、知识库、MCP 和业务平台共用统一的空数据库初始化脚本：
+`sql/00000000_init_empty_database.sql`。当前项目不再维护独立的 Knowledge 建表或增量迁移脚本。
 
 ## 入库流程
 

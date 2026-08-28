@@ -25,7 +25,7 @@ app/
     agent/                 # Agent 服务
     file/                  # 文件服务
     knowledge/             # 知识库服务
-sql/                       # 数据库升级脚本
+sql/                       # 空数据库初始化脚本
 web/                       # 独立的 Vue 管理前端
 ```
 
@@ -143,13 +143,15 @@ POST /knowledge/retrieval/search
 
 应用启动时会检查本地切片能力、PostgreSQL 和 Milvus，并在检查通过后启动知识入库 Worker。任何必需依赖未就绪时，当前版本都会终止启动。
 
-数据库脚本位于：
+空数据库初始化脚本位于：
 
 ```text
-backend/AI-backend/sql
+sql/00000000_init_empty_database.sql
 ```
 
-部署新环境时，需要按照文件名中的日期顺序执行尚未应用的 SQL 脚本。
+部署新环境时，连接目标 PostgreSQL 业务数据库并执行一次该脚本即可。当前项目处于开发阶段，
+不再维护旧数据库的逐版本迁移脚本；数据库结构发生不兼容调整时，应先清理开发数据，
+再使用最新初始化脚本重建业务表。
 
 ## 安全边界
 

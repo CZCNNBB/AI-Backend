@@ -38,7 +38,8 @@ class IngestionQueueService:
                 ).scalar_one()
                 if exists is None:
                     raise RuntimeError(
-                        f"知识库表不存在: {table_name}，请先执行 20260718_create_knowledge_tables.sql"
+                        f"知识库表不存在: {table_name}，"
+                        "请先执行 sql/00000000_init_empty_database.sql"
                     )
 
     def submit(
