@@ -26,6 +26,7 @@ app/
     file/                  # 文件服务
     knowledge/             # 知识库服务
 sql/                       # 空数据库初始化脚本
+docker/                    # Docker 构建、Compose 和离线交付文件
 web/                       # 独立的 Vue 管理前端
 ```
 
@@ -195,6 +196,16 @@ npm run dev
 ```
 
 前端通过 `web/.env` 中的 `VITE_BACKEND_URL` 指向 `AI-backend`。开发环境的 `/api` 请求由 Vite 代理到后端。
+
+## Docker 离线部署
+
+Dockerfile、Compose、Nginx 和离线打包脚本统一位于 `docker/`。生成 Linux AMD64 离线部署包：
+
+```powershell
+.\docker\scripts\build_offline_package.ps1 -Version 1.0.0
+```
+
+完整说明见 `docs/Docker离线部署说明.md`。
 
 ## 常用环境变量
 

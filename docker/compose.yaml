@@ -1,0 +1,212 @@
+name: ai-backend-platform
+
+services:
+  postgres:
+    image: postgres-rag:pg18
+    container_name: ai-postgres
+    restart: unless-stopped
+    shm_size: 256mb
+    environment:
+      # 首次部署前可直接在服务器上修改这里的数据库配置。
+      POSTGRES_DB: ai
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: change_me_before_deploy
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+    volumes:
+      # PostgreSQL 18 官方镜像要求把持久化卷挂载到 /var/lib/postgresql。
+      - postgres_data:/var/lib/postgresql
+      # 该目录仅在空数据卷首次初始化时执行，已有数据卷不会重复执行。
+      - ../sql/00000000_init_empty_database.sql:/docker-entrypoint-initdb.d/001-ai-backend.sql:ro
+    ports:
+      # 数据库只允许服务器本机访问；远程管理建议使用 SSH 隧道。
+      - "127.0.0.1:5433:5432"
+    healthcheck:
+      # 初始化阶段的临时 PostgreSQL 只监听 Unix Socket；走 TCP 可确保初始化 SQL 已完成。
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - ai-platform
+
+  milvus-etcd:
+    image: quay.io/coreos/etcd:v3.5.25
+    container_name: ai-milvus-etcd
+    restart: unless-stopped
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+    command:
+      - etcd
+      - --advertise-client-urls=http://milvus-etcd:2379
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --data-dir=/etcd
+    volumes:
+      - milvus_etcd_data:/etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 5
+    networks:
+      - ai-platform
+
+  milvus-minio:
+    image: minio/minio:RELEASE.2024-05-28T17-19-04Z
+    container_name: ai-milvus-minio
+    restart: unless-stopped
+    environment:
+      # MinIO 仅在内部 Docker 网络提供给 Milvus，不向宿主机暴露端口。
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    command: minio server /minio_data --console-address ":9001"
+    volumes:
+      - milvus_minio_data:/minio_data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 30s
+      timeout: 20s
+      retries: 5
+    networks:
+      - ai-platform
+
+  milvus-standalone:
+    image: milvusdb/milvus:v3.0.0
+    container_name: ai-milvus-standalone
+    restart: unless-stopped
+    command: ["milvus", "run", "standalone"]
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      MINIO_REGION: us-east-1
+      ETCD_ENDPOINTS: milvus-etcd:2379
+      MINIO_ADDRESS: milvus-minio:9000
+    volumes:
+      - milvus_data:/var/lib/milvus
+    ports:
+      # Milvus API 与 WebUI 默认只允许服务器本机访问。
+      - "127.0.0.1:19530:19530"
+      - "127.0.0.1:9091:9091"
+    depends_on:
+      milvus-etcd:
+        condition: service_healthy
+      milvus-minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9091/healthz"]
+      interval: 30s
+      timeout: 20s
+      retries: 5
+      start_period: 120s
+    networks:
+      - ai-platform
+
+  ai-backend:
+    image: ai-backend:1.0.0
+    container_name: ai-backend
+    restart: unless-stopped
+    environment:
+      FASTAPI_HOST: 0.0.0.0
+      FASTAPI_PORT: 8090
+      LOG_LEVEL: INFO
+      FASTMCP_PUBLIC_URL: http://127.0.0.1:8090/mcp/
+
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      # 必须与 postgres 服务中的账号、密码和数据库名称保持一致。
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: change_me_before_deploy
+      POSTGRES_DATABASE: ai
+      POSTGRES_CONNECT_TIMEOUT: 5
+
+      CHECKPOINTER_TYPE: postgres
+      CHECKPOINTER_POSTGRES_SCHEMA: agent
+      CHECKPOINTER_POOL_MIN_SIZE: 1
+      CHECKPOINTER_POOL_MAX_SIZE: 5
+      CHECKPOINTER_POOL_TIMEOUT: 10
+      CHECKPOINTER_POOL_STARTUP_TIMEOUT: 30
+      CHECKPOINTER_POOL_MAX_IDLE: 300
+      CHECKPOINTER_POOL_MAX_LIFETIME: 1800
+
+      MILVUS_URI: http://milvus-standalone:19530
+      MILVUS_TOKEN: ""
+      MILVUS_DATABASE: ai
+      MILVUS_CONNECT_TIMEOUT: 15
+      MILVUS_WRITE_TIMEOUT: 30
+      MILVUS_QUERY_TIMEOUT: 30
+      MILVUS_NPROBE: 10
+
+      AI_BACKEND_UPLOAD_DIR: /data/uploads
+      FILE_MAX_FILES_PER_UPLOAD: 10
+      FILE_MAX_SINGLE_FILE_MB: 50
+      FILE_MAX_TOTAL_UPLOAD_MB: 100
+      FILE_UPLOAD_CHUNK_KB: 8
+      FILE_DEFAULT_READ_LINE_COUNT: 200
+      FILE_MAX_READ_RESPONSE_CHARS: 24000
+
+      # 本离线包暂不包含 MinerU；需要时改成可从容器访问的实际服务地址。
+      MINERU_ENABLED: "false"
+      MINERU_BASE_URL: http://host.docker.internal:18000
+      MINERU_HEALTH_TIMEOUT_SECONDS: 5
+      MINERU_REQUEST_TIMEOUT_SECONDS: 60
+      MINERU_TASK_TIMEOUT_SECONDS: 600
+      MINERU_POLL_INTERVAL_SECONDS: 2
+
+      KNOWLEDGE_STARTUP_HEALTH_CHECK_TIMEOUT: 30
+      KNOWLEDGE_INGESTION_WORKER_COUNT: 1
+      KNOWLEDGE_INGESTION_POLL_INTERVAL_SECONDS: 1
+      KNOWLEDGE_INGESTION_HEARTBEAT_SECONDS: 10
+      KNOWLEDGE_INGESTION_STALE_SECONDS: 60
+      KNOWLEDGE_INGESTION_RECOVERY_INTERVAL_SECONDS: 30
+      KNOWLEDGE_INGESTION_MAX_RETRIES: 3
+      KNOWLEDGE_INGESTION_RETRY_DELAY_SECONDS: 5
+
+      LANGSMITH_TRACING: "false"
+      LANGSMITH_API_KEY: ""
+      LANGSMITH_ENDPOINT: https://api.smith.langchain.com
+      LANGSMITH_PROJECT: ai-backend
+    volumes:
+      - ai_uploads:/data/uploads
+    extra_hosts:
+      # Linux Docker Engine 默认不提供该域名，显式映射后才能按需访问宿主机 MinerU。
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8090:8090"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      milvus-standalone:
+        condition: service_healthy
+    networks:
+      - ai-platform
+
+  ai-web:
+    image: ai-web:1.0.0
+    container_name: ai-web
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      ai-backend:
+        condition: service_healthy
+    networks:
+      - ai-platform
+
+networks:
+  ai-platform:
+    name: ai-backend-platform
+
+volumes:
+  postgres_data:
+    name: ai-postgres-data
+  milvus_etcd_data:
+    name: ai-milvus-etcd-data
+  milvus_minio_data:
+    name: ai-milvus-minio-data
+  milvus_data:
+    name: ai-milvus-data
+  ai_uploads:
+    name: ai-backend-uploads

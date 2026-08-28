@@ -8,7 +8,8 @@
 -- 1. 请连接到目标业务数据库后执行本脚本，例如：
 --    psql -h 127.0.0.1 -p 5433 -U <用户名> -d <数据库名> -f sql/00000000_init_empty_database.sql
 -- 2. 本脚本使用 CREATE TABLE IF NOT EXISTS，不会删除已经存在的表或数据。
--- 3. 本脚本面向“空数据库初始化”，不会修正已有但结构不一致的旧表；旧库应使用增量迁移脚本。
+-- 3. 本脚本面向“空数据库初始化”，不会修正已有但结构不一致的旧表。
+--    当前项目处于开发阶段，不维护旧库增量迁移；结构不兼容时请清理开发数据后重新初始化。
 -- 4. LangGraph Checkpointer 的 checkpoints、checkpoint_writes 等表不在本脚本中，
 --    它们由当前安装版本的 langgraph-checkpoint-postgres 在首次 setup() 时维护。
 -- 5. 本脚本只创建表结构，不写入模型 API Key、Agent 模板或其他业务数据。

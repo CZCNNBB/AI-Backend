@@ -1,0 +1,25 @@
+# Git、本地环境与编辑器文件不进入镜像。
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+.idea
+.vscode
+
+# Python、本地数据与测试缓存不进入镜像。
+**/__pycache__/
+**/*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+data/
+
+# 后端镜像不需要前端、文档、部署包和本地日志。
+web/
+docs/
+sql/
+scripts/
+*.log
+*.tar
+*.tar.gz

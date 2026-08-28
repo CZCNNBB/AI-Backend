@@ -39,6 +39,7 @@ web/.vite/
 *.bak
 data/uploads/
 data/tmp/
+/release/
 
 # 常见本地数据库文件
 *.sqlite

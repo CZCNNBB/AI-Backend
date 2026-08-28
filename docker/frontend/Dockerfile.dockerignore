@@ -1,0 +1,20 @@
+# 前端构建上下文从仓库根目录发送，只保留 web 源码和 Nginx 配置。
+**
+!web/
+!web/**
+!docker/
+!docker/frontend/
+!docker/frontend/default.conf
+
+# 即使父目录被允许，本地依赖、产物、环境变量和日志仍不进入构建上下文。
+web/node_modules/
+web/dist/
+web/.vite/
+web/.env
+web/.env.*
+!web/.env.example
+web/*.log
+web/.github/
+web/.husky/
+web/tests/
+web/coverage/

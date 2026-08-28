@@ -1,0 +1,16 @@
+# 该文件只在有源码的构建机上使用；离线服务器只需要 compose.yaml。
+services:
+  ai-backend:
+    # 构建脚本通过进程环境变量指定发布版本；运行时 Compose 不依赖该变量。
+    image: ${AI_BACKEND_IMAGE:-ai-backend:1.0.0}
+    build:
+      context: ..
+      dockerfile: docker/backend/Dockerfile
+
+  ai-web:
+    image: ${AI_WEB_IMAGE:-ai-web:1.0.0}
+    build:
+      context: ..
+      dockerfile: docker/frontend/Dockerfile
+      args:
+        VITE_API_BASE: /api
